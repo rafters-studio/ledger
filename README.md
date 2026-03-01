@@ -55,7 +55,7 @@ Soft-delete means `DELETE FROM users WHERE id = ?` becomes `UPDATE users SET del
 ### What it does not provide
 
 - Cascading soft-deletes. If you soft-delete a user, their posts don't automatically soft-delete. That's your business logic.
-- Automatic query filtering. You have to call `notDeleted()` or use `createAuditedDb()`. There's no global middleware that silently hides rows - that's a footgun.
+- Automatic query filtering. You have to call `notDeleted()` or use `createAuditedDb()`. There's no global middleware that silently hides rows - that will burn you when you're debugging why a record "doesn't exist" when it's sitting right there.
 - Unique constraint handling. If you have a unique index on `email`, a soft-deleted row still occupies that slot. Handle this in your schema (partial indexes, or include `deleted_at` in the constraint).
 
 ```typescript
