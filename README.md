@@ -216,11 +216,55 @@ Beyond compliance theater:
 
 ## GDPR
 
-The audit trail and purge tooling together cover three areas of GDPR:
+### Accountability (Article 5(2))
 
-- **Accountability (Article 5(2))** - The audit trail is your evidence that you track what happens to personal data. Who changed it, when, from where. When a regulator asks "how do you demonstrate accountability for data processing?" you point at the log.
-- **Records of processing (Article 30)** - Every audit entry is a record of a processing activity. Insert, update, delete, soft-delete, restore - each one documented with actor, timestamp, and before/after state.
-- **Breach response (Article 33)** - When a breach happens, the first question is "what was affected?" The audit trail tells you which records were accessed or modified, by whom, and when. You need that to determine scope and meet the 72-hour notification window.
+GDPR requires you to demonstrate that personal data is processed lawfully and that you can account for what happens to it. The audit trail is that evidence. Every mutation to every table records who did it, when, from where (IP, user agent, endpoint), and captures the before and after state.
+
+When a regulator asks "how do you demonstrate accountability for data processing?" - you point at the log.
+
+#### What it provides
+
+- **Actor attribution** - Every entry records `userId`. You know which authenticated user performed each operation.
+- **Source attribution** - IP address, user agent, API endpoint, request ID. You know where the request came from.
+- **Before/after snapshots** - `oldData` and `newData` as JSON. You can see exactly what changed.
+- **Timestamped, typed actions** - INSERT, UPDATE, DELETE, SOFT_DELETE, RESTORE. You know what kind of operation was performed and when.
+
+#### What it does not provide
+
+- **Proof of lawful basis.** The log shows what happened, not why it was allowed. Tracking consent, legitimate interest, or contractual necessity is your responsibility.
+- **Read access logging.** This logs mutations (writes). It does not log SELECT queries. If you need to prove who viewed personal data, you need separate access logging.
+
+### Records of Processing (Article 30)
+
+GDPR requires controllers to maintain records of processing activities. Every audit entry is a record of a processing activity - what table was affected, what action was taken, what data was involved, who performed it.
+
+#### What it provides
+
+- **Per-record history** - `getRecordHistory(db, auditLog, 'users', userId)` returns every processing activity for a specific record, newest first.
+- **Table-level tracking** - `tableName` field on every entry. You can query all processing activities for a specific category of data.
+- **Action categorization** - INSERT, UPDATE, DELETE, SOFT_DELETE, RESTORE. Each processing activity is typed.
+
+#### What it does not provide
+
+- **Processing purpose.** The log records that data was changed, not why. "Marketing," "service delivery," "fraud prevention" - you need to track purposes separately.
+- **Data category classification.** The log doesn't know that `email` is contact data and `ip` is technical data. GDPR Article 30 requires you to describe categories of personal data. That's your documentation.
+- **Third-party processor records.** If you share data with a payment processor or email provider, those transfers aren't captured here.
+
+### Breach Response (Article 33)
+
+When a breach happens, the first question is "what was affected?" You have 72 hours to notify the supervisory authority. The audit trail tells you which records were accessed or modified, by whom, and when. That's what you need to determine scope.
+
+#### What it provides
+
+- **Breach scope determination** - Query the audit log by time range, user, or table to determine what data was affected during an incident.
+- **Timeline reconstruction** - Timestamped entries let you establish exactly when unauthorized changes occurred.
+- **Actor identification** - `userId`, IP, user agent on every entry. If an account was compromised, you can see what it did.
+
+#### What it does not provide
+
+- **Breach detection.** This doesn't monitor for anomalies or alert you that a breach is happening. It gives you the data to investigate after you know.
+- **Notification delivery.** It doesn't send emails to affected users or file reports with supervisory authorities. That's your process.
+- **Risk assessment.** Determining whether a breach is "likely to result in a risk to the rights and freedoms of natural persons" is a human judgment call, not something a log can tell you.
 
 ### Right to Erasure (Article 17)
 
@@ -262,9 +306,7 @@ const alreadyPurged = await isUserDataPurged(db, auditLog, 'user-123');
 
 - **Data in other tables.** This only touches the audit log. If the user's email is in a `users` table, a `newsletter_subscribers` table, and an `orders` table, you need to handle those separately.
 - **Data in other systems.** Payment processors, email providers, analytics services, CDN logs. GDPR covers all of it. This handles one table.
-- **Consent management.** No consent tracking, no preference center, no cookie banners.
 - **Data portability (Article 20).** This anonymizes data. It doesn't export it. If you need "give me all my data," build that separately.
-- **Breach notification delivery.** The audit trail helps you determine breach scope, but it doesn't send the notification emails or file the report. That's on you.
 - **DPO tooling.** No dashboards, no request tracking, no compliance workflows.
 
 ---
