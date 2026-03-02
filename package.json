@@ -1,5 +1,5 @@
 {
-  "name": "drizzle-ledger",
+  "name": "@ezmode-games/drizzle-ledger",
   "version": "0.0.1",
   "description": "Soft-delete, audit trail, and GDPR compliance for Drizzle ORM",
   "type": "module",

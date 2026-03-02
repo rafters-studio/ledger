@@ -6,10 +6,10 @@
  * @example
  * ```typescript
  * // In your schema file
- * export { auditLog } from 'drizzle-ledger/schema/sqlite';
+ * export { auditLog } from '@ezmode-games/drizzle-ledger/schema/sqlite';
  *
  * // Or customize the table name
- * import { createAuditLogTable } from 'drizzle-ledger/schema/sqlite';
+ * import { createAuditLogTable } from '@ezmode-games/drizzle-ledger/schema/sqlite';
  * export const auditLog = createAuditLogTable('custom_audit_log');
  * ```
  */

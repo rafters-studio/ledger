@@ -6,7 +6,7 @@
  * @example
  * ```typescript
  * import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
- * import { softDeleteColumns } from 'drizzle-ledger/soft-delete/sqlite';
+ * import { softDeleteColumns } from '@ezmode-games/drizzle-ledger/soft-delete/sqlite';
  *
  * export const users = sqliteTable('users', {
  *   id: text('id').primaryKey(),

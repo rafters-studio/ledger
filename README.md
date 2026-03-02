@@ -1,4 +1,4 @@
-# drizzle-ledger
+# @ezmode-games/drizzle-ledger
 
 **Stop rewriting soft-delete for every project.**
 
@@ -25,7 +25,7 @@ These three things are always the same code. They always interact with each othe
 ## Install
 
 ```bash
-pnpm add drizzle-ledger
+pnpm add @ezmode-games/drizzle-ledger
 ```
 
 Peer dependency: `drizzle-orm >= 0.30.0`
@@ -60,7 +60,7 @@ Soft-delete means `DELETE FROM users WHERE id = ?` becomes `UPDATE users SET del
 
 ```typescript
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { softDeleteColumns } from 'drizzle-ledger/soft-delete/sqlite';
+import { softDeleteColumns } from '@ezmode-games/drizzle-ledger/soft-delete/sqlite';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -70,7 +70,7 @@ export const users = sqliteTable('users', {
 });
 ```
 
-Postgres: `drizzle-ledger/soft-delete/pg`. MySQL: `drizzle-ledger/soft-delete/mysql`.
+Postgres: `@ezmode-games/drizzle-ledger/soft-delete/pg`. MySQL: `@ezmode-games/drizzle-ledger/soft-delete/mysql`.
 
 ---
 
@@ -101,7 +101,7 @@ The right thing happens by default. You can read the entire implementation in ~4
 - Undo. It soft-deletes the row. Restoring it is a separate operation (`restoreValues()`).
 
 ```typescript
-import { createAuditedDb } from 'drizzle-ledger/db';
+import { createAuditedDb } from '@ezmode-games/drizzle-ledger/db';
 
 const db = createAuditedDb(drizzle(env.DB), {
   hardDeleteTables: ['session', 'verification'], // these actually delete
@@ -127,7 +127,7 @@ The audit log records: **who** changed **what** record in **which** table, **whe
 The audit context uses `AsyncLocalStorage`. Set it once in your middleware. Every audit entry created downstream - in any service, any helper, any nested function call - automatically inherits userId, IP, user agent, endpoint, and request ID. No prop drilling. No passing context objects through 6 function signatures.
 
 ```typescript
-import { createLedgerContext, runWithLedgerContext } from 'drizzle-ledger/context';
+import { createLedgerContext, runWithLedgerContext } from '@ezmode-games/drizzle-ledger/context';
 
 app.use(async (c, next) => {
   const context = createLedgerContext({
@@ -147,7 +147,7 @@ Works in Node.js, Bun, Deno, and Cloudflare Workers (AsyncLocalStorage is availa
 For explicit control over what gets logged:
 
 ```typescript
-import { logInsert, logUpdate, logSoftDelete, logDelete, logRestore } from 'drizzle-ledger/audit';
+import { logInsert, logUpdate, logSoftDelete, logDelete, logRestore } from '@ezmode-games/drizzle-ledger/audit';
 
 // After inserting
 const [user] = await db.insert(users).values(data).returning();
@@ -164,7 +164,7 @@ await logUpdate(db, auditLog, 'users', id, oldUser, newUser);
 If you'd rather not call `logInsert` / `logUpdate` manually, the `AuditLogger` plugs into Drizzle's logger interface and intercepts SQL queries:
 
 ```typescript
-import { AuditLogger } from 'drizzle-ledger/logger';
+import { AuditLogger } from '@ezmode-games/drizzle-ledger/logger';
 
 const logger = new AuditLogger(
   async (entry) => {
@@ -282,7 +282,7 @@ GDPR says you can anonymize instead of delete. The audit trail structure stays i
 6. Writes the anonymized data back.
 
 ```typescript
-import { purgeUserData, isUserDataPurged } from 'drizzle-ledger/gdpr';
+import { purgeUserData, isUserDataPurged } from '@ezmode-games/drizzle-ledger/gdpr';
 
 const result = await purgeUserData(db, auditLog, 'user-123', {
   piiFields: ['email', 'name', 'phone', 'address', 'ip', 'userAgent'],
@@ -316,7 +316,7 @@ const alreadyPurged = await isUserDataPurged(db, auditLog, 'user-123');
 If you use [Better Auth](https://www.better-auth.com/), the plugin hooks into its `databaseHooks` to automatically log user/account create and update operations. The soft-delete callback intercepts `deleteUser` to perform soft-delete instead of hard delete.
 
 ```typescript
-import { ledgerPlugin, createSoftDeleteCallback, isSoftDeletePerformed } from 'drizzle-ledger/better-auth';
+import { ledgerPlugin, createSoftDeleteCallback, isSoftDeletePerformed } from '@ezmode-games/drizzle-ledger/better-auth';
 
 export const auth = betterAuth({
   user: {
@@ -367,20 +367,20 @@ Import only what you need. Every subpath is independently tree-shakeable.
 
 | Import | What |
 |--------|------|
-| `drizzle-ledger` | Everything |
-| `drizzle-ledger/soft-delete` | Dialect-agnostic helpers |
-| `drizzle-ledger/soft-delete/sqlite` | SQLite columns |
-| `drizzle-ledger/soft-delete/pg` | Postgres columns |
-| `drizzle-ledger/soft-delete/mysql` | MySQL columns |
-| `drizzle-ledger/schema/sqlite` | SQLite audit table |
-| `drizzle-ledger/schema/pg` | Postgres audit table |
-| `drizzle-ledger/schema/mysql` | MySQL audit table |
-| `drizzle-ledger/audit` | Manual audit functions |
-| `drizzle-ledger/context` | AsyncLocalStorage context |
-| `drizzle-ledger/db` | Automatic soft-delete wrapper |
-| `drizzle-ledger/gdpr` | GDPR purge |
-| `drizzle-ledger/logger` | Drizzle Logger with audit |
-| `drizzle-ledger/better-auth` | Better Auth plugin |
+| `@ezmode-games/drizzle-ledger` | Everything |
+| `@ezmode-games/drizzle-ledger/soft-delete` | Dialect-agnostic helpers |
+| `@ezmode-games/drizzle-ledger/soft-delete/sqlite` | SQLite columns |
+| `@ezmode-games/drizzle-ledger/soft-delete/pg` | Postgres columns |
+| `@ezmode-games/drizzle-ledger/soft-delete/mysql` | MySQL columns |
+| `@ezmode-games/drizzle-ledger/schema/sqlite` | SQLite audit table |
+| `@ezmode-games/drizzle-ledger/schema/pg` | Postgres audit table |
+| `@ezmode-games/drizzle-ledger/schema/mysql` | MySQL audit table |
+| `@ezmode-games/drizzle-ledger/audit` | Manual audit functions |
+| `@ezmode-games/drizzle-ledger/context` | AsyncLocalStorage context |
+| `@ezmode-games/drizzle-ledger/db` | Automatic soft-delete wrapper |
+| `@ezmode-games/drizzle-ledger/gdpr` | GDPR purge |
+| `@ezmode-games/drizzle-ledger/logger` | Drizzle Logger with audit |
+| `@ezmode-games/drizzle-ledger/better-auth` | Better Auth plugin |
 
 ---
 

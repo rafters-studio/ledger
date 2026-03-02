@@ -5,7 +5,7 @@
  *
  * @example
  * ```typescript
- * export { auditLog } from 'drizzle-ledger/schema/mysql';
+ * export { auditLog } from '@ezmode-games/drizzle-ledger/schema/mysql';
  * ```
  */
 

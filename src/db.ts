@@ -96,7 +96,7 @@ interface WithDeleteAndUpdate {
  * @example
  * ```typescript
  * import { drizzle } from 'drizzle-orm/d1';
- * import { createAuditedDb } from 'drizzle-ledger/db';
+ * import { createAuditedDb } from '@ezmode-games/drizzle-ledger/db';
  *
  * const baseDb = drizzle(env.DB);
  * export const db = createAuditedDb(baseDb);

@@ -19,7 +19,7 @@ import { type Column, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
  *
  * @example
  * ```typescript
- * import { notDeleted } from 'drizzle-ledger/soft-delete';
+ * import { notDeleted } from '@ezmode-games/drizzle-ledger/soft-delete';
  *
  * const users = await db
  *   .select()

@@ -6,7 +6,7 @@
  * @example
  * ```typescript
  * import { mysqlTable, varchar } from 'drizzle-orm/mysql-core';
- * import { softDeleteColumns } from 'drizzle-ledger/soft-delete/mysql';
+ * import { softDeleteColumns } from '@ezmode-games/drizzle-ledger/soft-delete/mysql';
  *
  * export const users = mysqlTable('users', {
  *   id: varchar('id', { length: 36 }).primaryKey(),
