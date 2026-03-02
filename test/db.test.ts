@@ -52,14 +52,12 @@ describe("getTableName", () => {
 });
 
 describe("createAuditedDb", () => {
-  // Create a mock database that tracks calls
   function createMockDb() {
     const calls: { method: string; args: unknown[] }[] = [];
 
     const mockUpdateResult = {
       returning: vi.fn().mockResolvedValue([{ id: "user-123", deletedAt: new Date() }]),
       execute: vi.fn().mockResolvedValue(undefined),
-      then: vi.fn((fn: (value: unknown) => unknown) => Promise.resolve().then(fn)),
     };
 
     const mockUpdateWithWhere = {
@@ -73,7 +71,6 @@ describe("createAuditedDb", () => {
     const mockDeleteResult = {
       returning: vi.fn().mockResolvedValue([]),
       execute: vi.fn().mockResolvedValue(undefined),
-      then: vi.fn((fn: (value: unknown) => unknown) => Promise.resolve().then(fn)),
     };
 
     const mockDeleteWithWhere = {
@@ -110,19 +107,16 @@ describe("createAuditedDb", () => {
 
     const auditedDb = createAuditedDb(db);
 
-    // Call delete on a table with deletedAt
     const result = auditedDb.delete(usersWithSoftDelete);
     result.where({ id: "user-123" });
 
-    // Should have called update instead of the original delete
     expect(updateSpy).toHaveBeenCalledWith(usersWithSoftDelete);
     expect(mockUpdateWithSet.set).toHaveBeenCalled();
     expect(mockUpdateWithWhere.where).toHaveBeenCalledWith({ id: "user-123" });
 
-    // Check that soft-delete values were set
     const setCall = mockUpdateWithSet.set.mock.calls[0][0];
     expect(setCall.deletedAt).toBeInstanceOf(Date);
-    expect(setCall.deletedBy).toBeNull(); // No context = null
+    expect(setCall.deletedBy).toBeNull();
   });
 
   test("uses regular delete for tables without deletedAt", () => {
@@ -132,10 +126,8 @@ describe("createAuditedDb", () => {
 
     auditedDb.delete(logsWithoutSoftDelete).where({ id: "log-123" });
 
-    // Should have called the original delete
     expect(deleteSpy).toHaveBeenCalledWith(logsWithoutSoftDelete);
     expect(mockDeleteWithWhere.where).toHaveBeenCalledWith({ id: "log-123" });
-    // Update should NOT have been called
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -148,7 +140,6 @@ describe("createAuditedDb", () => {
 
     auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" });
 
-    // Should have called original delete despite table having deletedAt
     expect(deleteSpy).toHaveBeenCalledWith(usersWithSoftDelete);
     expect(mockDeleteWithWhere.where).toHaveBeenCalled();
     expect(updateSpy).not.toHaveBeenCalled();

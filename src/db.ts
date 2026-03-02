@@ -69,11 +69,20 @@ export function getTableName(table: unknown): string | null {
   return null;
 }
 
+interface DrizzleQuery {
+  returning: () => DrizzleQuery;
+  execute: () => Promise<unknown>;
+}
+
+interface DrizzleUpdateChain {
+  set: (values: Record<string, unknown>) => {
+    where: (condition: unknown) => DrizzleQuery;
+  };
+}
+
 interface WithDeleteAndUpdate {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  delete: (table: any) => any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  update: (table: any) => any;
+  delete: (table: unknown) => { where: (condition: unknown) => DrizzleQuery };
+  update: (table: unknown) => DrizzleUpdateChain;
 }
 
 /**
@@ -101,8 +110,7 @@ export function createAuditedDb<T extends WithDeleteAndUpdate>(db: T, config?: A
   const originalDelete = db.delete.bind(db);
   const softDeleteFactory = config?.softDeleteValuesFactory ?? softDeleteValues;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (db as WithDeleteAndUpdate).delete = (table: any) => {
+  (db as WithDeleteAndUpdate).delete = (table: unknown) => {
     const tableName = getTableName(table);
 
     if (tableName && config?.hardDeleteTables?.includes(tableName)) {
@@ -114,20 +122,10 @@ export function createAuditedDb<T extends WithDeleteAndUpdate>(db: T, config?: A
     }
 
     return {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      where: (condition: any) => {
+      where: (condition: unknown) => {
         const context = getLedgerContext();
         const deleteValues = softDeleteFactory(context?.userId);
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const updateQuery = (db.update as any)(table).set(deleteValues).where(condition);
-
-        return {
-          returning: () => updateQuery.returning(),
-          execute: () => updateQuery.execute(),
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          then: (onfulfilled?: (value: any) => any) => updateQuery.then(onfulfilled),
-        };
+        return db.update(table).set(deleteValues).where(condition);
       },
     };
   };
