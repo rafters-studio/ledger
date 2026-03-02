@@ -8,5 +8,5 @@
  * - drizzle-ledger/schema/mysql
  */
 
-export type { AuditLog, AuditLogInsert, AuditLogSelect } from './sqlite.js';
-export { AUDIT_LOG_INDEXES } from './sqlite.js';
+export type { AuditLog, AuditLogInsert, AuditLogSelect } from "./sqlite.js";
+export { AUDIT_LOG_INDEXES } from "./sqlite.js";

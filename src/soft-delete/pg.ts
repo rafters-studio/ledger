@@ -16,15 +16,15 @@
  * ```
  */
 
-import { text, timestamp } from 'drizzle-orm/pg-core';
+import { text, timestamp } from "drizzle-orm/pg-core";
 
 /** Soft-delete columns for Postgres: deletedAt (timestamptz) + deletedBy (text) */
 export const softDeleteColumns = {
-	deletedAt: timestamp('deleted_at', { mode: 'date', withTimezone: true }),
-	deletedBy: text('deleted_by'),
+  deletedAt: timestamp("deleted_at", { mode: "date", withTimezone: true }),
+  deletedBy: text("deleted_by"),
 } as const;
 
 /** Minimal soft-delete for Postgres: deletedAt only */
 export const softDeleteTimestamp = {
-	deletedAt: timestamp('deleted_at', { mode: 'date', withTimezone: true }),
+  deletedAt: timestamp("deleted_at", { mode: "date", withTimezone: true }),
 } as const;

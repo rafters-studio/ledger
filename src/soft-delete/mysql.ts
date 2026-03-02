@@ -16,15 +16,15 @@
  * ```
  */
 
-import { timestamp, varchar } from 'drizzle-orm/mysql-core';
+import { timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /** Soft-delete columns for MySQL: deletedAt (timestamp) + deletedBy (varchar) */
 export const softDeleteColumns = {
-	deletedAt: timestamp('deleted_at', { mode: 'date' }),
-	deletedBy: varchar('deleted_by', { length: 255 }),
+  deletedAt: timestamp("deleted_at", { mode: "date" }),
+  deletedBy: varchar("deleted_by", { length: 255 }),
 } as const;
 
 /** Minimal soft-delete for MySQL: deletedAt only */
 export const softDeleteTimestamp = {
-	deletedAt: timestamp('deleted_at', { mode: 'date' }),
+  deletedAt: timestamp("deleted_at", { mode: "date" }),
 } as const;

@@ -8,7 +8,7 @@
  * - drizzle-ledger/soft-delete/mysql
  */
 
-import { type Column, isNotNull, isNull, type SQL, sql } from 'drizzle-orm';
+import { type Column, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
 
 /**
  * Filter condition to exclude soft-deleted records.
@@ -28,7 +28,7 @@ import { type Column, isNotNull, isNull, type SQL, sql } from 'drizzle-orm';
  * ```
  */
 export function notDeleted<T extends { deletedAt: Column }>(table: T): SQL {
-	return isNull(table.deletedAt);
+  return isNull(table.deletedAt);
 }
 
 /**
@@ -39,7 +39,7 @@ export function notDeleted<T extends { deletedAt: Column }>(table: T): SQL {
  * @returns SQL condition for deleted records only
  */
 export function onlyDeleted<T extends { deletedAt: Column }>(table: T): SQL {
-	return isNotNull(table.deletedAt);
+  return isNotNull(table.deletedAt);
 }
 
 /**
@@ -49,7 +49,7 @@ export function onlyDeleted<T extends { deletedAt: Column }>(table: T): SQL {
  * @returns SQL condition that matches all records
  */
 export function includingDeleted(): SQL {
-	return sql`1=1`;
+  return sql`1=1`;
 }
 
 /**
@@ -59,13 +59,13 @@ export function includingDeleted(): SQL {
  * @returns Object with deletedAt set to current timestamp
  */
 export function softDeleteValues(deletedBy?: string | null): {
-	deletedAt: Date;
-	deletedBy: string | null;
+  deletedAt: Date;
+  deletedBy: string | null;
 } {
-	return {
-		deletedAt: new Date(),
-		deletedBy: deletedBy ?? null,
-	};
+  return {
+    deletedAt: new Date(),
+    deletedBy: deletedBy ?? null,
+  };
 }
 
 /**
@@ -74,13 +74,13 @@ export function softDeleteValues(deletedBy?: string | null): {
  * @returns Object with deletedAt and deletedBy set to null
  */
 export function restoreValues(): {
-	deletedAt: null;
-	deletedBy: null;
+  deletedAt: null;
+  deletedBy: null;
 } {
-	return {
-		deletedAt: null,
-		deletedBy: null,
-	};
+  return {
+    deletedAt: null,
+    deletedBy: null,
+  };
 }
 
 /**
@@ -90,20 +90,20 @@ export function restoreValues(): {
  * @returns true if the record is soft-deleted
  */
 export function isSoftDeleted(record: { deletedAt: Date | null } | null | undefined): boolean {
-	return record?.deletedAt !== null && record?.deletedAt !== undefined;
+  return record?.deletedAt !== null && record?.deletedAt !== undefined;
 }
 
 /**
  * Type helper to add soft-delete columns to a table type.
  */
 export type WithSoftDelete<T> = T & {
-	deletedAt: Date | null;
-	deletedBy: string | null;
+  deletedAt: Date | null;
+  deletedBy: string | null;
 };
 
 /**
  * Type helper for minimal soft-delete (just timestamp).
  */
 export type WithSoftDeleteTimestamp<T> = T & {
-	deletedAt: Date | null;
+  deletedAt: Date | null;
 };

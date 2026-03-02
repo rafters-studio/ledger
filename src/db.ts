@@ -5,20 +5,20 @@
  * convert delete() calls to soft-delete for tables with deletedAt column.
  */
 
-import { getLedgerContext } from './context.js';
-import { softDeleteValues } from './soft-delete/index.js';
+import { getLedgerContext } from "./context.js";
+import { softDeleteValues } from "./soft-delete/index.js";
 
 /**
  * Configuration for createAuditedDb.
  */
 export interface AuditedDbConfig {
-	/** Tables to exclude from soft-delete (will hard delete) */
-	hardDeleteTables?: string[];
-	/** Custom soft-delete values factory */
-	softDeleteValuesFactory?: (deletedBy?: string | null) => {
-		deletedAt: Date;
-		deletedBy: string | null;
-	};
+  /** Tables to exclude from soft-delete (will hard delete) */
+  hardDeleteTables?: string[];
+  /** Custom soft-delete values factory */
+  softDeleteValuesFactory?: (deletedBy?: string | null) => {
+    deletedAt: Date;
+    deletedBy: string | null;
+  };
 }
 
 /**
@@ -29,16 +29,16 @@ export interface AuditedDbConfig {
  * @returns true if the table has the column
  */
 export function hasColumn(table: unknown, columnName: string): boolean {
-	if (!table || typeof table !== 'object') {
-		return false;
-	}
+  if (!table || typeof table !== "object") {
+    return false;
+  }
 
-	const col = (table as Record<string, unknown>)[columnName];
-	if (!col || typeof col !== 'object') {
-		return false;
-	}
+  const col = (table as Record<string, unknown>)[columnName];
+  if (!col || typeof col !== "object") {
+    return false;
+  }
 
-	return 'name' in col;
+  return "name" in col;
 }
 
 /**
@@ -48,32 +48,32 @@ export function hasColumn(table: unknown, columnName: string): boolean {
  * @returns The table name or null
  */
 export function getTableName(table: unknown): string | null {
-	if (!table || typeof table !== 'object') {
-		return null;
-	}
+  if (!table || typeof table !== "object") {
+    return null;
+  }
 
-	const tableObj = table as Record<string, unknown>;
+  const tableObj = table as Record<string, unknown>;
 
-	const nameSymbol = Symbol.for('drizzle:Name');
-	if (nameSymbol in tableObj) {
-		return tableObj[nameSymbol] as string;
-	}
+  const nameSymbol = Symbol.for("drizzle:Name");
+  if (nameSymbol in tableObj) {
+    return tableObj[nameSymbol] as string;
+  }
 
-	if ('_' in tableObj && typeof tableObj._ === 'object' && tableObj._ !== null) {
-		const meta = tableObj._ as Record<string, unknown>;
-		if ('name' in meta && typeof meta.name === 'string') {
-			return meta.name;
-		}
-	}
+  if ("_" in tableObj && typeof tableObj._ === "object" && tableObj._ !== null) {
+    const meta = tableObj._ as Record<string, unknown>;
+    if ("name" in meta && typeof meta.name === "string") {
+      return meta.name;
+    }
+  }
 
-	return null;
+  return null;
 }
 
 interface WithDeleteAndUpdate {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	delete: (table: any) => any;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	update: (table: any) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete: (table: any) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  update: (table: any) => any;
 }
 
 /**
@@ -97,43 +97,40 @@ interface WithDeleteAndUpdate {
  * // Actually executes: UPDATE users SET deleted_at = ?, deleted_by = ? WHERE id = ?
  * ```
  */
-export function createAuditedDb<T extends WithDeleteAndUpdate>(
-	db: T,
-	config?: AuditedDbConfig,
-): T {
-	const originalDelete = db.delete.bind(db);
-	const softDeleteFactory = config?.softDeleteValuesFactory ?? softDeleteValues;
+export function createAuditedDb<T extends WithDeleteAndUpdate>(db: T, config?: AuditedDbConfig): T {
+  const originalDelete = db.delete.bind(db);
+  const softDeleteFactory = config?.softDeleteValuesFactory ?? softDeleteValues;
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	(db as WithDeleteAndUpdate).delete = (table: any) => {
-		const tableName = getTableName(table);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (db as WithDeleteAndUpdate).delete = (table: any) => {
+    const tableName = getTableName(table);
 
-		if (tableName && config?.hardDeleteTables?.includes(tableName)) {
-			return originalDelete(table);
-		}
+    if (tableName && config?.hardDeleteTables?.includes(tableName)) {
+      return originalDelete(table);
+    }
 
-		if (!hasColumn(table, 'deletedAt')) {
-			return originalDelete(table);
-		}
+    if (!hasColumn(table, "deletedAt")) {
+      return originalDelete(table);
+    }
 
-		return {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			where: (condition: any) => {
-				const context = getLedgerContext();
-				const deleteValues = softDeleteFactory(context?.userId);
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      where: (condition: any) => {
+        const context = getLedgerContext();
+        const deleteValues = softDeleteFactory(context?.userId);
 
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const updateQuery = (db.update as any)(table).set(deleteValues).where(condition);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const updateQuery = (db.update as any)(table).set(deleteValues).where(condition);
 
-				return {
-					returning: () => updateQuery.returning(),
-					execute: () => updateQuery.execute(),
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					then: (onfulfilled?: (value: any) => any) => updateQuery.then(onfulfilled),
-				};
-			},
-		};
-	};
+        return {
+          returning: () => updateQuery.returning(),
+          execute: () => updateQuery.execute(),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          then: (onfulfilled?: (value: any) => any) => updateQuery.then(onfulfilled),
+        };
+      },
+    };
+  };
 
-	return db;
+  return db;
 }

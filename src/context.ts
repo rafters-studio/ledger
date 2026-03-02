@@ -24,7 +24,7 @@
  * ```
  */
 
-import type { LedgerContext } from './types.js';
+import type { LedgerContext } from "./types.js";
 
 // Use global AsyncLocalStorage (Cloudflare Workers compatible)
 // Do NOT import from 'node:async_hooks' - it doesn't exist in Workers runtime
@@ -42,7 +42,7 @@ function getStorage(): AsyncLocalStorage<LedgerContext> | null {
   if (!storageInitialized) {
     storageInitialized = true;
     // Check if AsyncLocalStorage is available (not available in some test environments)
-    if (typeof AsyncLocalStorage !== 'undefined') {
+    if (typeof AsyncLocalStorage !== "undefined") {
       ledgerStorage = new AsyncLocalStorage<LedgerContext>();
     }
   }
@@ -70,7 +70,7 @@ function getStorage(): AsyncLocalStorage<LedgerContext> | null {
  */
 export function runWithLedgerContext<T>(
   context: LedgerContext,
-  fn: () => T | Promise<T>
+  fn: () => T | Promise<T>,
 ): T | Promise<T> {
   const storage = getStorage();
   // If AsyncLocalStorage is not available, just run the function without context
@@ -170,7 +170,7 @@ export function createLedgerContext(options: {
  */
 export function createSystemContext(
   source: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
 ): LedgerContext {
   return {
     userId: null,

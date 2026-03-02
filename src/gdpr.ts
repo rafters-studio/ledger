@@ -17,8 +17,8 @@
  * ```
  */
 
-import { eq, or } from 'drizzle-orm';
-import type { AuditLog } from './schema/sqlite.js';
+import { eq, or } from "drizzle-orm";
+import type { AuditLog } from "./schema/sqlite.js";
 
 /**
  * Configuration for GDPR purge operation.
@@ -42,19 +42,19 @@ export interface PurgeResult {
 
 /** Default PII fields to remove from JSON data */
 const DEFAULT_PII_FIELDS = [
-  'email',
-  'name',
-  'firstName',
-  'lastName',
-  'phone',
-  'address',
-  'ip',
-  'ipAddress',
-  'userAgent',
+  "email",
+  "name",
+  "firstName",
+  "lastName",
+  "phone",
+  "address",
+  "ip",
+  "ipAddress",
+  "userAgent",
 ];
 
 /** Default replacement value for userId */
-const DEFAULT_ANONYMIZED_USER_ID = 'PURGED_USER';
+const DEFAULT_ANONYMIZED_USER_ID = "PURGED_USER";
 
 /**
  * Remove PII fields from a JSON object.
@@ -73,7 +73,7 @@ const DEFAULT_ANONYMIZED_USER_ID = 'PURGED_USER';
  */
 export function anonymizeJsonData(
   data: Record<string, unknown> | null,
-  piiFields: string[]
+  piiFields: string[],
 ): Record<string, unknown> | null {
   if (data === null) {
     return null;
@@ -89,12 +89,12 @@ export function anonymizeJsonData(
     }
 
     // Recursively process nested objects
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       result[key] = anonymizeJsonData(value as Record<string, unknown>, piiFields);
     } else if (Array.isArray(value)) {
       // Process arrays - anonymize objects within arrays
       result[key] = value.map((item) => {
-        if (item !== null && typeof item === 'object') {
+        if (item !== null && typeof item === "object") {
           return anonymizeJsonData(item as Record<string, unknown>, piiFields);
         }
         return item;
@@ -159,7 +159,7 @@ export async function purgeUserData(
   db: DrizzleDb,
   auditTable: AuditLog,
   userId: string,
-  config?: PurgeConfig
+  config?: PurgeConfig,
 ): Promise<PurgeResult> {
   const piiFields = config?.piiFields ?? DEFAULT_PII_FIELDS;
   const anonymizedUserId = config?.anonymizedUserId ?? DEFAULT_ANONYMIZED_USER_ID;
@@ -228,7 +228,7 @@ export async function purgeUserData(
 export async function isUserDataPurged(
   db: DrizzleDb,
   auditTable: AuditLog,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
   const entries = await db.select().from(auditTable).where(eq(auditTable.userId, userId));
 

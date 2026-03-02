@@ -37,8 +37,8 @@
  * ```
  */
 
-import type { BetterAuthPlugin, User } from 'better-auth';
-import { softDeleteValues } from './soft-delete/index.js';
+import type { BetterAuthPlugin, User } from "better-auth";
+import { softDeleteValues } from "./soft-delete/index.js";
 
 /**
  * Audit entry passed to the writeAuditEntry callback.
@@ -49,7 +49,7 @@ export interface LedgerAuditEntry {
   /** The record ID */
   recordId: string;
   /** The action performed (INSERT, UPDATE, SOFT_DELETE for soft-deletes, DELETE for hard deletes) */
-  action: 'INSERT' | 'UPDATE' | 'SOFT_DELETE' | 'DELETE';
+  action: "INSERT" | "UPDATE" | "SOFT_DELETE" | "DELETE";
   /** The data before the operation (for UPDATE/SOFT_DELETE/DELETE) */
   oldData: Record<string, unknown> | null;
   /** The data after the operation (for INSERT/UPDATE) */
@@ -68,7 +68,7 @@ export interface LedgerPluginConfig {
    * Note: This only logs audit entries; to actually perform soft-delete,
    * use createSoftDeleteCallback with user.deleteUser.beforeDelete.
    */
-  softDeleteTables?: 'user'[];
+  softDeleteTables?: "user"[];
   /**
    * Callback to write an audit entry.
    * If not provided, audit logging is disabled.
@@ -78,13 +78,13 @@ export interface LedgerPluginConfig {
    * Tables to audit. Defaults to ['user', 'account'].
    * Session and verification are excluded by default due to high volume.
    */
-  auditTables?: ('user' | 'account' | 'session' | 'verification')[];
+  auditTables?: ("user" | "account" | "session" | "verification")[];
 }
 
 // Helper to safely log errors without blocking auth operations
 function safeLog(message: string, error?: unknown): void {
   // eslint-disable-next-line no-console
-  console.error(`[drizzle-ledger] ${message}`, error ?? '');
+  console.error(`[drizzle-ledger] ${message}`, error ?? "");
 }
 
 // Type for better-auth user with id
@@ -124,7 +124,7 @@ type UserWithId = { id: string } & Record<string, unknown>;
  * ```
  */
 export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
-  const auditTables = config?.auditTables ?? ['user', 'account'];
+  const auditTables = config?.auditTables ?? ["user", "account"];
   const softDeleteTables = config?.softDeleteTables ?? [];
   const writeAuditEntry = config?.writeAuditEntry;
 
@@ -134,7 +134,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     try {
       await writeAuditEntry(entry);
     } catch (error) {
-      safeLog('Failed to write audit entry', error);
+      safeLog("Failed to write audit entry", error);
     }
   }
 
@@ -149,10 +149,10 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
           await audit({
             tableName: table,
             recordId: data.id,
-            action: 'INSERT',
+            action: "INSERT",
             oldData: null,
             newData: data as Record<string, unknown>,
-            userId: table === 'user' ? data.id : null,
+            userId: table === "user" ? data.id : null,
           });
         },
       },
@@ -161,10 +161,10 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
           await audit({
             tableName: table,
             recordId: data.id,
-            action: 'UPDATE',
+            action: "UPDATE",
             oldData: null, // We don't have access to old data in after hook
             newData: data as Record<string, unknown>,
-            userId: table === 'user' ? data.id : null,
+            userId: table === "user" ? data.id : null,
           });
         },
       },
@@ -178,14 +178,14 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   // actual soft-delete. To implement soft-delete behavior (e.g. updating
   // a deletedAt column), configure your own user.deleteUser.beforeDelete
   // callback, for example using createSoftDeleteCallback.
-  const userDeleteHooks = softDeleteTables.includes('user')
+  const userDeleteHooks = softDeleteTables.includes("user")
     ? {
         beforeDelete: async (user: User) => {
           // Log the soft-delete intent
           await audit({
-            tableName: 'user',
+            tableName: "user",
             recordId: user.id,
-            action: 'SOFT_DELETE',
+            action: "SOFT_DELETE",
             oldData: user as unknown as Record<string, unknown>,
             newData: null,
             userId: user.id,
@@ -195,7 +195,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     : undefined;
 
   return {
-    id: 'drizzle-ledger',
+    id: "drizzle-ledger",
     init: () => {
       return {
         options: {
@@ -277,7 +277,7 @@ export interface SoftDeleteCallbackOptions {
  * ```
  */
 export function createSoftDeleteCallback(
-  options: SoftDeleteCallbackOptions
+  options: SoftDeleteCallbackOptions,
 ): (user: User, request?: Request) => Promise<void> {
   const { db, userTable, whereUserId, writeAuditEntry } = options;
 
@@ -297,15 +297,15 @@ export function createSoftDeleteCallback(
     if (writeAuditEntry) {
       try {
         await writeAuditEntry({
-          tableName: 'user',
+          tableName: "user",
           recordId: user.id,
-          action: 'SOFT_DELETE',
+          action: "SOFT_DELETE",
           oldData: user as unknown as Record<string, unknown>,
           newData: { ...user, ...deleteVals } as unknown as Record<string, unknown>,
           userId: user.id,
         });
       } catch (error) {
-        safeLog('Failed to write audit entry for soft-delete', error);
+        safeLog("Failed to write audit entry for soft-delete", error);
       }
     }
 
@@ -342,20 +342,20 @@ export function createSoftDeleteCallback(
  * ```
  */
 export function createDeleteAuditCallback(
-  writeAuditEntry: (entry: LedgerAuditEntry) => Promise<void>
+  writeAuditEntry: (entry: LedgerAuditEntry) => Promise<void>,
 ): (user: User, request?: Request) => Promise<void> {
   return async (user: User, _request?: Request): Promise<void> => {
     try {
       await writeAuditEntry({
-        tableName: 'user',
+        tableName: "user",
         recordId: user.id,
-        action: 'DELETE', // Hard delete action (user was permanently deleted)
+        action: "DELETE", // Hard delete action (user was permanently deleted)
         oldData: user as unknown as Record<string, unknown>,
         newData: null,
         userId: user.id,
       });
     } catch (error) {
-      safeLog('Failed to write audit entry for delete', error);
+      safeLog("Failed to write audit entry for delete", error);
     }
   };
 }
@@ -365,13 +365,13 @@ export function createDeleteAuditCallback(
  * Check for this error type to handle soft-delete success cases.
  */
 export class SoftDeletePerformedError extends Error {
-  readonly code = 'SOFT_DELETE_PERFORMED' as const;
+  readonly code = "SOFT_DELETE_PERFORMED" as const;
   readonly softDeleted = true as const;
   readonly userId: string;
 
   constructor(userId: string) {
-    super('User soft-deleted successfully');
-    this.name = 'SoftDeletePerformedError';
+    super("User soft-deleted successfully");
+    this.name = "SoftDeletePerformedError";
     this.userId = userId;
   }
 }
@@ -399,9 +399,9 @@ export function isSoftDeletePerformed(error: unknown): error is SoftDeletePerfor
   if (error instanceof SoftDeletePerformedError) return true;
   if (error instanceof Error) {
     return (
-      'code' in error &&
-      (error as Error & { code?: string }).code === 'SOFT_DELETE_PERFORMED' &&
-      'softDeleted' in error &&
+      "code" in error &&
+      (error as Error & { code?: string }).code === "SOFT_DELETE_PERFORMED" &&
+      "softDeleted" in error &&
       (error as Error & { softDeleted?: boolean }).softDeleted === true
     );
   }

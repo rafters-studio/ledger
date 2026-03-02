@@ -16,15 +16,15 @@
  * ```
  */
 
-import { integer, text } from 'drizzle-orm/sqlite-core';
+import { integer, text } from "drizzle-orm/sqlite-core";
 
 /** Soft-delete columns for SQLite: deletedAt (timestamp_ms) + deletedBy (text) */
 export const softDeleteColumns = {
-	deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
-	deletedBy: text('deleted_by'),
+  deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  deletedBy: text("deleted_by"),
 } as const;
 
 /** Minimal soft-delete for SQLite: deletedAt only */
 export const softDeleteTimestamp = {
-	deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+  deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
 } as const;

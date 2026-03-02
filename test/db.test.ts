@@ -1,63 +1,63 @@
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { describe, expect, test, vi } from 'vitest';
-import { createAuditedDb, getTableName, hasColumn } from '../src/db.js';
-import { createLedgerContext, runWithLedgerContext } from '../src/context.js';
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { describe, expect, test, vi } from "vitest";
+import { createAuditedDb, getTableName, hasColumn } from "../src/db.js";
+import { createLedgerContext, runWithLedgerContext } from "../src/context.js";
 
 // Test tables
-const usersWithSoftDelete = sqliteTable('users', {
-  id: text('id').primaryKey(),
-  name: text('name'),
-  deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
-  deletedBy: text('deleted_by'),
+const usersWithSoftDelete = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  name: text("name"),
+  deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  deletedBy: text("deleted_by"),
 });
 
-const logsWithoutSoftDelete = sqliteTable('logs', {
-  id: text('id').primaryKey(),
-  message: text('message'),
+const logsWithoutSoftDelete = sqliteTable("logs", {
+  id: text("id").primaryKey(),
+  message: text("message"),
 });
 
-describe('hasColumn', () => {
-  test('returns true for existing column', () => {
-    expect(hasColumn(usersWithSoftDelete, 'deletedAt')).toBe(true);
-    expect(hasColumn(usersWithSoftDelete, 'id')).toBe(true);
-    expect(hasColumn(usersWithSoftDelete, 'name')).toBe(true);
+describe("hasColumn", () => {
+  test("returns true for existing column", () => {
+    expect(hasColumn(usersWithSoftDelete, "deletedAt")).toBe(true);
+    expect(hasColumn(usersWithSoftDelete, "id")).toBe(true);
+    expect(hasColumn(usersWithSoftDelete, "name")).toBe(true);
   });
 
-  test('returns false for missing column', () => {
-    expect(hasColumn(logsWithoutSoftDelete, 'deletedAt')).toBe(false);
-    expect(hasColumn(usersWithSoftDelete, 'nonexistent')).toBe(false);
+  test("returns false for missing column", () => {
+    expect(hasColumn(logsWithoutSoftDelete, "deletedAt")).toBe(false);
+    expect(hasColumn(usersWithSoftDelete, "nonexistent")).toBe(false);
   });
 
-  test('returns false for null/undefined', () => {
-    expect(hasColumn(null, 'deletedAt')).toBe(false);
-    expect(hasColumn(undefined, 'deletedAt')).toBe(false);
+  test("returns false for null/undefined", () => {
+    expect(hasColumn(null, "deletedAt")).toBe(false);
+    expect(hasColumn(undefined, "deletedAt")).toBe(false);
   });
 
-  test('returns false for non-objects', () => {
-    expect(hasColumn('string', 'deletedAt')).toBe(false);
-    expect(hasColumn(123, 'deletedAt')).toBe(false);
+  test("returns false for non-objects", () => {
+    expect(hasColumn("string", "deletedAt")).toBe(false);
+    expect(hasColumn(123, "deletedAt")).toBe(false);
   });
 });
 
-describe('getTableName', () => {
-  test('returns null for null/undefined', () => {
+describe("getTableName", () => {
+  test("returns null for null/undefined", () => {
     expect(getTableName(null)).toBeNull();
     expect(getTableName(undefined)).toBeNull();
   });
 
-  test('returns null for non-objects', () => {
-    expect(getTableName('string')).toBeNull();
+  test("returns null for non-objects", () => {
+    expect(getTableName("string")).toBeNull();
     expect(getTableName(123)).toBeNull();
   });
 });
 
-describe('createAuditedDb', () => {
+describe("createAuditedDb", () => {
   // Create a mock database that tracks calls
   function createMockDb() {
     const calls: { method: string; args: unknown[] }[] = [];
 
     const mockUpdateResult = {
-      returning: vi.fn().mockResolvedValue([{ id: 'user-123', deletedAt: new Date() }]),
+      returning: vi.fn().mockResolvedValue([{ id: "user-123", deletedAt: new Date() }]),
       execute: vi.fn().mockResolvedValue(undefined),
       then: vi.fn((fn: (value: unknown) => unknown) => Promise.resolve().then(fn)),
     };
@@ -81,12 +81,12 @@ describe('createAuditedDb', () => {
     };
 
     const deleteSpy = vi.fn().mockImplementation((table: unknown) => {
-      calls.push({ method: 'delete', args: [table] });
+      calls.push({ method: "delete", args: [table] });
       return mockDeleteWithWhere;
     });
 
     const updateSpy = vi.fn().mockImplementation((table: unknown) => {
-      calls.push({ method: 'update', args: [table] });
+      calls.push({ method: "update", args: [table] });
       return mockUpdateWithSet;
     });
 
@@ -105,19 +105,19 @@ describe('createAuditedDb', () => {
     };
   }
 
-  test('converts delete to soft-delete for tables with deletedAt', () => {
+  test("converts delete to soft-delete for tables with deletedAt", () => {
     const { db, updateSpy, mockUpdateWithSet, mockUpdateWithWhere } = createMockDb();
 
     const auditedDb = createAuditedDb(db);
 
     // Call delete on a table with deletedAt
     const result = auditedDb.delete(usersWithSoftDelete);
-    result.where({ id: 'user-123' });
+    result.where({ id: "user-123" });
 
     // Should have called update instead of the original delete
     expect(updateSpy).toHaveBeenCalledWith(usersWithSoftDelete);
     expect(mockUpdateWithSet.set).toHaveBeenCalled();
-    expect(mockUpdateWithWhere.where).toHaveBeenCalledWith({ id: 'user-123' });
+    expect(mockUpdateWithWhere.where).toHaveBeenCalledWith({ id: "user-123" });
 
     // Check that soft-delete values were set
     const setCall = mockUpdateWithSet.set.mock.calls[0][0];
@@ -125,28 +125,28 @@ describe('createAuditedDb', () => {
     expect(setCall.deletedBy).toBeNull(); // No context = null
   });
 
-  test('uses regular delete for tables without deletedAt', () => {
+  test("uses regular delete for tables without deletedAt", () => {
     const { db, deleteSpy, updateSpy, mockDeleteWithWhere } = createMockDb();
 
     const auditedDb = createAuditedDb(db);
 
-    auditedDb.delete(logsWithoutSoftDelete).where({ id: 'log-123' });
+    auditedDb.delete(logsWithoutSoftDelete).where({ id: "log-123" });
 
     // Should have called the original delete
     expect(deleteSpy).toHaveBeenCalledWith(logsWithoutSoftDelete);
-    expect(mockDeleteWithWhere.where).toHaveBeenCalledWith({ id: 'log-123' });
+    expect(mockDeleteWithWhere.where).toHaveBeenCalledWith({ id: "log-123" });
     // Update should NOT have been called
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
-  test('respects hardDeleteTables config', () => {
+  test("respects hardDeleteTables config", () => {
     const { db, deleteSpy, updateSpy, mockDeleteWithWhere } = createMockDb();
 
     const auditedDb = createAuditedDb(db, {
-      hardDeleteTables: ['users'],
+      hardDeleteTables: ["users"],
     });
 
-    auditedDb.delete(usersWithSoftDelete).where({ id: 'user-123' });
+    auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" });
 
     // Should have called original delete despite table having deletedAt
     expect(deleteSpy).toHaveBeenCalledWith(usersWithSoftDelete);
@@ -154,59 +154,59 @@ describe('createAuditedDb', () => {
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
-  test('captures userId from context for deletedBy', () => {
+  test("captures userId from context for deletedBy", () => {
     const { db, mockUpdateWithSet } = createMockDb();
 
     const auditedDb = createAuditedDb(db);
 
-    const context = createLedgerContext({ userId: 'admin-456' });
+    const context = createLedgerContext({ userId: "admin-456" });
 
     runWithLedgerContext(context, () => {
-      auditedDb.delete(usersWithSoftDelete).where({ id: 'user-123' });
+      auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" });
     });
 
     const setCall = mockUpdateWithSet.set.mock.calls[0][0];
-    expect(setCall.deletedBy).toBe('admin-456');
+    expect(setCall.deletedBy).toBe("admin-456");
   });
 
-  test('supports custom softDeleteValuesFactory', () => {
+  test("supports custom softDeleteValuesFactory", () => {
     const { db, mockUpdateWithSet } = createMockDb();
 
-    const customDate = new Date('2024-01-01');
+    const customDate = new Date("2024-01-01");
     const auditedDb = createAuditedDb(db, {
       softDeleteValuesFactory: (deletedBy) => ({
         deletedAt: customDate,
-        deletedBy: deletedBy ?? 'system',
+        deletedBy: deletedBy ?? "system",
       }),
     });
 
-    auditedDb.delete(usersWithSoftDelete).where({ id: 'user-123' });
+    auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" });
 
     const setCall = mockUpdateWithSet.set.mock.calls[0][0];
     expect(setCall.deletedAt).toBe(customDate);
-    expect(setCall.deletedBy).toBe('system');
+    expect(setCall.deletedBy).toBe("system");
   });
 
-  test('returning() works on soft-delete', async () => {
+  test("returning() works on soft-delete", async () => {
     const { db, mockUpdateResult } = createMockDb();
 
     const auditedDb = createAuditedDb(db);
 
     const result = await auditedDb
       .delete(usersWithSoftDelete)
-      .where({ id: 'user-123' })
+      .where({ id: "user-123" })
       .returning();
 
     expect(mockUpdateResult.returning).toHaveBeenCalled();
-    expect(result).toEqual([{ id: 'user-123', deletedAt: expect.any(Date) }]);
+    expect(result).toEqual([{ id: "user-123", deletedAt: expect.any(Date) }]);
   });
 
-  test('execute() works on soft-delete', async () => {
+  test("execute() works on soft-delete", async () => {
     const { db, mockUpdateResult } = createMockDb();
 
     const auditedDb = createAuditedDb(db);
 
-    await auditedDb.delete(usersWithSoftDelete).where({ id: 'user-123' }).execute();
+    await auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" }).execute();
 
     expect(mockUpdateResult.execute).toHaveBeenCalled();
   });

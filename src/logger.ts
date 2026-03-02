@@ -5,14 +5,14 @@
  * for audit logging purposes.
  */
 
-import type { Logger } from 'drizzle-orm';
-import { getLedgerContext } from './context.js';
+import type { Logger } from "drizzle-orm";
+import { getLedgerContext } from "./context.js";
 
 /**
  * Parsed query information.
  */
 export interface ParsedQuery {
-  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'SELECT';
+  action: "INSERT" | "UPDATE" | "DELETE" | "SELECT";
   table: string;
 }
 
@@ -22,7 +22,7 @@ export interface ParsedQuery {
 export interface AuditEntryInput {
   tableName: string;
   recordId: string | null;
-  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'SELECT';
+  action: "INSERT" | "UPDATE" | "DELETE" | "SELECT";
   query: string;
   params: unknown[];
   userId: string | null;
@@ -56,25 +56,25 @@ export function parseQuery(query: string): ParsedQuery | null {
   // INSERT INTO table_name
   const insertMatch = normalized.match(/^INSERT\s+INTO\s+[`"']?(\w+)[`"']?/i);
   if (insertMatch?.[1]) {
-    return { action: 'INSERT', table: insertMatch[1].toLowerCase() };
+    return { action: "INSERT", table: insertMatch[1].toLowerCase() };
   }
 
   // UPDATE table_name
   const updateMatch = normalized.match(/^UPDATE\s+[`"']?(\w+)[`"']?/i);
   if (updateMatch?.[1]) {
-    return { action: 'UPDATE', table: updateMatch[1].toLowerCase() };
+    return { action: "UPDATE", table: updateMatch[1].toLowerCase() };
   }
 
   // DELETE FROM table_name
   const deleteMatch = normalized.match(/^DELETE\s+FROM\s+[`"']?(\w+)[`"']?/i);
   if (deleteMatch?.[1]) {
-    return { action: 'DELETE', table: deleteMatch[1].toLowerCase() };
+    return { action: "DELETE", table: deleteMatch[1].toLowerCase() };
   }
 
   // SELECT ... FROM table_name
   const selectMatch = normalized.match(/^SELECT\s+.+?\s+FROM\s+[`"']?(\w+)[`"']?/i);
   if (selectMatch?.[1]) {
-    return { action: 'SELECT', table: selectMatch[1].toLowerCase() };
+    return { action: "SELECT", table: selectMatch[1].toLowerCase() };
   }
 
   return null;
@@ -89,7 +89,7 @@ export function parseQuery(query: string): ParsedQuery | null {
  */
 export function extractRecordId(params: unknown[]): string | null {
   for (const param of params) {
-    if (typeof param === 'string' && param.length > 0 && param.length < 100) {
+    if (typeof param === "string" && param.length > 0 && param.length < 100) {
       // Looks like a UUID or ID
       if (/^[a-f0-9-]{20,}$/i.test(param) || /^[a-z0-9_-]+$/i.test(param)) {
         return param;
@@ -121,7 +121,7 @@ export function extractRecordId(params: unknown[]): string | null {
 export class AuditLogger implements Logger {
   constructor(
     private writeAuditEntry: (entry: AuditEntryInput) => Promise<void>,
-    private config?: AuditLoggerConfig
+    private config?: AuditLoggerConfig,
   ) {}
 
   logQuery(query: string, params: unknown[]): void {
@@ -131,7 +131,7 @@ export class AuditLogger implements Logger {
     }
 
     // Skip SELECT unless configured to log them
-    if (parsed.action === 'SELECT' && !this.config?.logSelects) {
+    if (parsed.action === "SELECT" && !this.config?.logSelects) {
       return;
     }
 
@@ -163,7 +163,7 @@ export class AuditLogger implements Logger {
       requestId: context?.requestId,
     }).catch((err) => {
       // Log error but don't throw - audit failures shouldn't break the app
-      console.error('[drizzle-ledger] Failed to write audit entry:', err);
+      console.error("[drizzle-ledger] Failed to write audit entry:", err);
     });
   }
 }

@@ -34,7 +34,7 @@ export interface AuditLogEntry {
   /** Primary key of the affected record */
   recordId: string;
   /** Type of operation performed */
-  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'SOFT_DELETE' | 'RESTORE';
+  action: "INSERT" | "UPDATE" | "DELETE" | "SOFT_DELETE" | "RESTORE";
   /** Data before the change (null for INSERT) */
   oldData: Record<string, unknown> | null;
   /** Data after the change (null for DELETE) */

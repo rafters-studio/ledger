@@ -5,15 +5,15 @@
  * Automatically captures context from AsyncLocalStorage.
  */
 
-import { uuidv7 } from 'uuidv7';
-import { getLedgerContext } from './context.js';
-import type { auditLog } from './schema/sqlite.js';
-import type { AuditLogEntry, LedgerContext } from './types.js';
+import { uuidv7 } from "uuidv7";
+import { getLedgerContext } from "./context.js";
+import type { auditLog } from "./schema/sqlite.js";
+import type { AuditLogEntry, LedgerContext } from "./types.js";
 
 /**
  * Action types for audit logging.
  */
-export type AuditAction = 'INSERT' | 'UPDATE' | 'DELETE' | 'SOFT_DELETE' | 'RESTORE';
+export type AuditAction = "INSERT" | "UPDATE" | "DELETE" | "SOFT_DELETE" | "RESTORE";
 
 /**
  * Options for creating an audit entry.
@@ -89,7 +89,7 @@ export async function insertAuditEntry(
     };
   },
   auditTable: typeof auditLog,
-  entry: AuditLogEntry
+  entry: AuditLogEntry,
 ): Promise<void> {
   await db
     .insert(auditTable)
@@ -131,12 +131,12 @@ export async function logInsert(
   auditTable: typeof auditLog,
   tableName: string,
   recordId: string,
-  newData: Record<string, unknown>
+  newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
   const entry = createAuditEntry({
     tableName,
     recordId,
-    action: 'INSERT',
+    action: "INSERT",
     oldData: null,
     newData,
   });
@@ -168,12 +168,12 @@ export async function logUpdate(
   tableName: string,
   recordId: string,
   oldData: Record<string, unknown>,
-  newData: Record<string, unknown>
+  newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
   const entry = createAuditEntry({
     tableName,
     recordId,
-    action: 'UPDATE',
+    action: "UPDATE",
     oldData,
     newData,
   });
@@ -203,12 +203,12 @@ export async function logDelete(
   auditTable: typeof auditLog,
   tableName: string,
   recordId: string,
-  oldData: Record<string, unknown>
+  oldData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
   const entry = createAuditEntry({
     tableName,
     recordId,
-    action: 'DELETE',
+    action: "DELETE",
     oldData,
     newData: null,
   });
@@ -242,12 +242,12 @@ export async function logSoftDelete(
   tableName: string,
   recordId: string,
   oldData: Record<string, unknown>,
-  newData: Record<string, unknown>
+  newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
   const entry = createAuditEntry({
     tableName,
     recordId,
-    action: 'SOFT_DELETE',
+    action: "SOFT_DELETE",
     oldData,
     newData,
   });
@@ -281,12 +281,12 @@ export async function logRestore(
   tableName: string,
   recordId: string,
   oldData: Record<string, unknown>,
-  newData: Record<string, unknown>
+  newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
   const entry = createAuditEntry({
     tableName,
     recordId,
-    action: 'RESTORE',
+    action: "RESTORE",
     oldData,
     newData,
   });
@@ -323,9 +323,9 @@ export async function getRecordHistory(
   },
   auditTable: typeof auditLog,
   tableName: string,
-  recordId: string
+  recordId: string,
 ): Promise<AuditLogEntry[]> {
-  const { and, eq, desc } = await import('drizzle-orm');
+  const { and, eq, desc } = await import("drizzle-orm");
 
   const results = await db
     .select()

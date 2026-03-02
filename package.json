@@ -5,67 +5,162 @@
   "type": "module",
   "exports": {
     ".": {
-      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./soft-delete": {
-      "import": { "types": "./dist/soft-delete/index.d.ts", "default": "./dist/soft-delete/index.js" },
-      "require": { "types": "./dist/soft-delete/index.d.cts", "default": "./dist/soft-delete/index.cjs" }
+      "import": {
+        "types": "./dist/soft-delete/index.d.ts",
+        "default": "./dist/soft-delete/index.js"
+      },
+      "require": {
+        "types": "./dist/soft-delete/index.d.cts",
+        "default": "./dist/soft-delete/index.cjs"
+      }
     },
     "./soft-delete/sqlite": {
-      "import": { "types": "./dist/soft-delete/sqlite.d.ts", "default": "./dist/soft-delete/sqlite.js" },
-      "require": { "types": "./dist/soft-delete/sqlite.d.cts", "default": "./dist/soft-delete/sqlite.cjs" }
+      "import": {
+        "types": "./dist/soft-delete/sqlite.d.ts",
+        "default": "./dist/soft-delete/sqlite.js"
+      },
+      "require": {
+        "types": "./dist/soft-delete/sqlite.d.cts",
+        "default": "./dist/soft-delete/sqlite.cjs"
+      }
     },
     "./soft-delete/pg": {
-      "import": { "types": "./dist/soft-delete/pg.d.ts", "default": "./dist/soft-delete/pg.js" },
-      "require": { "types": "./dist/soft-delete/pg.d.cts", "default": "./dist/soft-delete/pg.cjs" }
+      "import": {
+        "types": "./dist/soft-delete/pg.d.ts",
+        "default": "./dist/soft-delete/pg.js"
+      },
+      "require": {
+        "types": "./dist/soft-delete/pg.d.cts",
+        "default": "./dist/soft-delete/pg.cjs"
+      }
     },
     "./soft-delete/mysql": {
-      "import": { "types": "./dist/soft-delete/mysql.d.ts", "default": "./dist/soft-delete/mysql.js" },
-      "require": { "types": "./dist/soft-delete/mysql.d.cts", "default": "./dist/soft-delete/mysql.cjs" }
+      "import": {
+        "types": "./dist/soft-delete/mysql.d.ts",
+        "default": "./dist/soft-delete/mysql.js"
+      },
+      "require": {
+        "types": "./dist/soft-delete/mysql.d.cts",
+        "default": "./dist/soft-delete/mysql.cjs"
+      }
     },
     "./schema": {
-      "import": { "types": "./dist/schema/index.d.ts", "default": "./dist/schema/index.js" },
-      "require": { "types": "./dist/schema/index.d.cts", "default": "./dist/schema/index.cjs" }
+      "import": {
+        "types": "./dist/schema/index.d.ts",
+        "default": "./dist/schema/index.js"
+      },
+      "require": {
+        "types": "./dist/schema/index.d.cts",
+        "default": "./dist/schema/index.cjs"
+      }
     },
     "./schema/sqlite": {
-      "import": { "types": "./dist/schema/sqlite.d.ts", "default": "./dist/schema/sqlite.js" },
-      "require": { "types": "./dist/schema/sqlite.d.cts", "default": "./dist/schema/sqlite.cjs" }
+      "import": {
+        "types": "./dist/schema/sqlite.d.ts",
+        "default": "./dist/schema/sqlite.js"
+      },
+      "require": {
+        "types": "./dist/schema/sqlite.d.cts",
+        "default": "./dist/schema/sqlite.cjs"
+      }
     },
     "./schema/pg": {
-      "import": { "types": "./dist/schema/pg.d.ts", "default": "./dist/schema/pg.js" },
-      "require": { "types": "./dist/schema/pg.d.cts", "default": "./dist/schema/pg.cjs" }
+      "import": {
+        "types": "./dist/schema/pg.d.ts",
+        "default": "./dist/schema/pg.js"
+      },
+      "require": {
+        "types": "./dist/schema/pg.d.cts",
+        "default": "./dist/schema/pg.cjs"
+      }
     },
     "./schema/mysql": {
-      "import": { "types": "./dist/schema/mysql.d.ts", "default": "./dist/schema/mysql.js" },
-      "require": { "types": "./dist/schema/mysql.d.cts", "default": "./dist/schema/mysql.cjs" }
+      "import": {
+        "types": "./dist/schema/mysql.d.ts",
+        "default": "./dist/schema/mysql.js"
+      },
+      "require": {
+        "types": "./dist/schema/mysql.d.cts",
+        "default": "./dist/schema/mysql.cjs"
+      }
     },
     "./audit": {
-      "import": { "types": "./dist/audit.d.ts", "default": "./dist/audit.js" },
-      "require": { "types": "./dist/audit.d.cts", "default": "./dist/audit.cjs" }
+      "import": {
+        "types": "./dist/audit.d.ts",
+        "default": "./dist/audit.js"
+      },
+      "require": {
+        "types": "./dist/audit.d.cts",
+        "default": "./dist/audit.cjs"
+      }
     },
     "./context": {
-      "import": { "types": "./dist/context.d.ts", "default": "./dist/context.js" },
-      "require": { "types": "./dist/context.d.cts", "default": "./dist/context.cjs" }
+      "import": {
+        "types": "./dist/context.d.ts",
+        "default": "./dist/context.js"
+      },
+      "require": {
+        "types": "./dist/context.d.cts",
+        "default": "./dist/context.cjs"
+      }
     },
     "./db": {
-      "import": { "types": "./dist/db.d.ts", "default": "./dist/db.js" },
-      "require": { "types": "./dist/db.d.cts", "default": "./dist/db.cjs" }
+      "import": {
+        "types": "./dist/db.d.ts",
+        "default": "./dist/db.js"
+      },
+      "require": {
+        "types": "./dist/db.d.cts",
+        "default": "./dist/db.cjs"
+      }
     },
     "./gdpr": {
-      "import": { "types": "./dist/gdpr.d.ts", "default": "./dist/gdpr.js" },
-      "require": { "types": "./dist/gdpr.d.cts", "default": "./dist/gdpr.cjs" }
+      "import": {
+        "types": "./dist/gdpr.d.ts",
+        "default": "./dist/gdpr.js"
+      },
+      "require": {
+        "types": "./dist/gdpr.d.cts",
+        "default": "./dist/gdpr.cjs"
+      }
     },
     "./logger": {
-      "import": { "types": "./dist/logger.d.ts", "default": "./dist/logger.js" },
-      "require": { "types": "./dist/logger.d.cts", "default": "./dist/logger.cjs" }
+      "import": {
+        "types": "./dist/logger.d.ts",
+        "default": "./dist/logger.js"
+      },
+      "require": {
+        "types": "./dist/logger.d.cts",
+        "default": "./dist/logger.cjs"
+      }
     },
     "./better-auth": {
-      "import": { "types": "./dist/better-auth.d.ts", "default": "./dist/better-auth.js" },
-      "require": { "types": "./dist/better-auth.d.cts", "default": "./dist/better-auth.cjs" }
+      "import": {
+        "types": "./dist/better-auth.d.ts",
+        "default": "./dist/better-auth.js"
+      },
+      "require": {
+        "types": "./dist/better-auth.d.cts",
+        "default": "./dist/better-auth.cjs"
+      }
     }
   },
-  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
@@ -75,6 +170,7 @@
     "format": "oxfmt --write src/ test/",
     "format:check": "oxfmt --check src/ test/",
     "preflight": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "postinstall": "lefthook install",
     "prepublishOnly": "pnpm build",
     "changeset": "changeset",
     "release": "pnpm build && changeset publish"
@@ -120,6 +216,7 @@
     "@changesets/cli": "^2.29.8",
     "better-auth": "^1.5.0",
     "drizzle-orm": "^0.45.1",
+    "lefthook": "^2.1.2",
     "oxfmt": "^0.35.0",
     "oxlint": "^1.50.0",
     "tsup": "^8.5.1",
