@@ -1,34 +1,21 @@
 /**
- * Drizzle Ledger GDPR Purge
+ * Ledger GDPR - Drizzle Adapter
  *
- * GDPR-compliant user data purge that anonymizes audit logs
- * without deleting the audit trail.
- *
- * @example
- * ```typescript
- * import { purgeUserData } from '@rafters/ledger/gdpr';
- *
- * // Anonymize all user data in audit logs
- * const result = await purgeUserData(db, auditLog, 'user-123', {
- *   piiFields: ['email', 'name', 'ip', 'address', 'phone'],
- * });
- *
- * console.log(`Anonymized ${result.entriesAnonymized} audit entries`);
- * ```
+ * Drizzle-coupled GDPR purge functions.
  */
 
 import { eq, or } from "drizzle-orm";
+import { anonymizeJsonData, DEFAULT_PII_FIELDS } from "../core/gdpr.js";
+import type { PurgeConfig, PurgeResult } from "../core/gdpr.js";
 import type { AuditLog } from "./schema/sqlite.js";
 
-// Re-export pure helpers from core
+// Re-export pure helpers from core for convenience
 export {
   anonymizeJsonData,
   DEFAULT_PII_FIELDS,
   type PurgeConfig,
   type PurgeResult,
-} from "./core/gdpr.js";
-
-import { anonymizeJsonData, DEFAULT_PII_FIELDS } from "./core/gdpr.js";
+} from "../core/gdpr.js";
 
 /** Default replacement value for userId */
 const DEFAULT_ANONYMIZED_USER_ID = "PURGED_USER";
@@ -85,8 +72,8 @@ export async function purgeUserData(
   db: DrizzleDb,
   auditTable: AuditLog,
   userId: string,
-  config?: import("./core/gdpr.js").PurgeConfig,
-): Promise<import("./core/gdpr.js").PurgeResult> {
+  config?: PurgeConfig,
+): Promise<PurgeResult> {
   const piiFields = config?.piiFields ?? DEFAULT_PII_FIELDS;
   const anonymizedUserId = config?.anonymizedUserId ?? DEFAULT_ANONYMIZED_USER_ID;
 

@@ -39,22 +39,11 @@
  * ```
  */
 
-// Audit
-export {
-  type AuditAction,
-  type AuditEntryOptions,
-  createAuditEntry,
-  getRecordHistory,
-  insertAuditEntry,
-  logDelete,
-  logInsert,
-  logRestore,
-  logSoftDelete,
-  logUpdate,
-} from "./audit.js";
+// Core (ORM-agnostic)
+export * from "./core/index.js";
 
-// Audited Database
-export { type AuditedDbConfig, createAuditedDb, getTableName, hasColumn } from "./db.js";
+// Drizzle adapter
+export * from "./drizzle/index.js";
 
 // Better Auth Plugin
 export {
@@ -67,61 +56,3 @@ export {
   type SoftDeleteCallbackOptions,
   SoftDeletePerformedError,
 } from "./better-auth.js";
-
-// Context
-export {
-  createLedgerContext,
-  createSystemContext,
-  getLedgerContext,
-  hasLedgerContext,
-  runWithLedgerContext,
-} from "./context.js";
-
-// GDPR
-export {
-  anonymizeJsonData,
-  isUserDataPurged,
-  type PurgeConfig,
-  type PurgeResult,
-  purgeUserData,
-} from "./gdpr.js";
-
-// Logger
-export {
-  type AuditEntryInput,
-  AuditLogger,
-  type AuditLoggerConfig,
-  extractRecordId,
-  type ParsedQuery,
-  parseQuery,
-} from "./logger.js";
-
-// Schema (SQLite default)
-export {
-  AUDIT_LOG_INDEXES,
-  type AuditLog,
-  type AuditLogInsert,
-  type AuditLogSelect,
-} from "./schema/index.js";
-
-// Soft-delete (dialect-agnostic helpers)
-export {
-  includingDeleted,
-  isSoftDeleted,
-  notDeleted,
-  onlyDeleted,
-  restoreValues,
-  softDeleteValues,
-  type WithSoftDelete,
-  type WithSoftDeleteTimestamp,
-} from "./soft-delete/index.js";
-
-// Types
-export type {
-  AuditLogEntry,
-  LedgerConfig,
-  LedgerContext,
-  RestoreResult,
-  SoftDeleteOptions,
-  SoftDeleteResult,
-} from "./types.js";

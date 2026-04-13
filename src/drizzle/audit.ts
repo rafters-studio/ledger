@@ -1,15 +1,15 @@
 /**
- * Drizzle Ledger Audit
+ * Ledger Audit - Drizzle Adapter
  *
- * Functions for logging database changes to an audit trail.
- * Automatically captures context from AsyncLocalStorage.
+ * Drizzle-coupled functions for inserting and querying audit entries.
  */
 
+import { createAuditEntry } from "../core/audit.js";
+import type { AuditLogEntry } from "../core/types.js";
 import type { auditLog } from "./schema/sqlite.js";
-import type { AuditLogEntry } from "./core/types.js";
 
-// Re-export pure helpers from core
-export { type AuditAction, type AuditEntryOptions, createAuditEntry } from "./core/audit.js";
+// Re-export pure helpers from core for convenience
+export { type AuditAction, type AuditEntryOptions, createAuditEntry } from "../core/audit.js";
 
 /**
  * Insert an audit log entry into the database.
@@ -74,7 +74,6 @@ export async function logInsert(
   recordId: string,
   newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
-  const { createAuditEntry } = await import("./core/audit.js");
   const entry = createAuditEntry({
     tableName,
     recordId,
@@ -112,7 +111,6 @@ export async function logUpdate(
   oldData: Record<string, unknown>,
   newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
-  const { createAuditEntry } = await import("./core/audit.js");
   const entry = createAuditEntry({
     tableName,
     recordId,
@@ -148,7 +146,6 @@ export async function logDelete(
   recordId: string,
   oldData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
-  const { createAuditEntry } = await import("./core/audit.js");
   const entry = createAuditEntry({
     tableName,
     recordId,
@@ -188,7 +185,6 @@ export async function logSoftDelete(
   oldData: Record<string, unknown>,
   newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
-  const { createAuditEntry } = await import("./core/audit.js");
   const entry = createAuditEntry({
     tableName,
     recordId,
@@ -228,7 +224,6 @@ export async function logRestore(
   oldData: Record<string, unknown>,
   newData: Record<string, unknown>,
 ): Promise<AuditLogEntry> {
-  const { createAuditEntry } = await import("./core/audit.js");
   const entry = createAuditEntry({
     tableName,
     recordId,
