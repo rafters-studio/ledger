@@ -4,6 +4,8 @@ Every audit entry needs to know who triggered the operation, from where, and on 
 
 The mechanism is Node.js `AsyncLocalStorage`. Set context at the request boundary, and every audit function called anywhere in that async chain reads it automatically. No prop drilling. No global mutable state. Each request gets its own isolated context.
 
+Context is part of the core; all context functions import from `@rafters/ledger`.
+
 ## LedgerContext Shape
 
 | Field | Type | Required | Description |
