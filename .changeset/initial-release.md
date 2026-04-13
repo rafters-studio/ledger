@@ -1,13 +1,24 @@
 ---
-"@rafters/ledger": patch
+"@rafters/ledger": minor
 ---
 
-Initial release. Soft-delete, audit trail, and GDPR compliance for Drizzle ORM.
+Initial release. ORM-agnostic audit trail, soft-delete, and GDPR compliance.
 
+Core (`@rafters/ledger`):
+- AsyncLocalStorage context propagation
+- Pure soft-delete value helpers
+- Audit entry creation
+- GDPR PII anonymization
+- SoftDeletePerformedError for flow control
+
+Drizzle adapter (`@rafters/ledger/drizzle`):
 - Multi-dialect soft-delete columns (SQLite, PostgreSQL, MySQL)
 - Automatic delete-to-soft-delete via `createAuditedDb`
-- AsyncLocalStorage audit context propagation
 - Audit logging via Drizzle Logger interface
-- GDPR Article 17 audit log anonymization
-- Better Auth plugin integration
+- Audit query functions with full change history
+- GDPR Article 17 audit log purge
 - Pre-built audit log schema for all three dialects
+
+Better Auth (`@rafters/ledger/better-auth`):
+- Audit plugin for user/account mutations
+- Soft-delete callback for user deletion

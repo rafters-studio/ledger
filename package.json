@@ -150,7 +150,7 @@
   },
   "packageManager": "pnpm@10.28.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "peerDependencies": {
     "drizzle-orm": ">=0.30.0"
