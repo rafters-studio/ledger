@@ -163,7 +163,7 @@ export class AuditLogger implements Logger {
       requestId: context?.requestId,
     }).catch((err) => {
       // Log error but don't throw - audit failures shouldn't break the app
-      console.error("[drizzle-ledger] Failed to write audit entry:", err);
+      console.error("[ledger] Failed to write audit entry:", err);
     });
   }
 }

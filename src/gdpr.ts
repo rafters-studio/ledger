@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { purgeUserData } from '@ezmode-games/drizzle-ledger/gdpr';
+ * import { purgeUserData } from '@rafters/ledger/gdpr';
  *
  * // Anonymize all user data in audit logs
  * const result = await purgeUserData(db, auditLog, 'user-123', {
@@ -145,8 +145,8 @@ type DrizzleDb = { update: (table: any) => any; select: () => any };
  *
  * @example
  * ```typescript
- * import { purgeUserData } from '@ezmode-games/drizzle-ledger/gdpr';
- * import { auditLog } from '@ezmode-games/drizzle-ledger';
+ * import { purgeUserData } from '@rafters/ledger/gdpr';
+ * import { auditLog } from '@rafters/ledger';
  *
  * const result = await purgeUserData(db, auditLog, 'user-123', {
  *   piiFields: ['email', 'name', 'ip', 'address', 'phone'],

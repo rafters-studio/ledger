@@ -3,9 +3,9 @@
  *
  * Dialect-agnostic helpers for implementing soft-delete patterns in Drizzle.
  * For column definitions, import from the dialect-specific module:
- * - drizzle-ledger/soft-delete/sqlite
- * - drizzle-ledger/soft-delete/pg
- * - drizzle-ledger/soft-delete/mysql
+ * - ledger/soft-delete/sqlite
+ * - ledger/soft-delete/pg
+ * - ledger/soft-delete/mysql
  */
 
 import { type Column, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
@@ -19,7 +19,7 @@ import { type Column, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
  *
  * @example
  * ```typescript
- * import { notDeleted } from '@ezmode-games/drizzle-ledger/soft-delete';
+ * import { notDeleted } from '@rafters/ledger/soft-delete';
  *
  * const users = await db
  *   .select()

@@ -1,0 +1,309 @@
+# better-auth Integration
+
+`@rafters/ledger/better-auth` provides three pieces that wire audit logging and soft-delete behavior into [better-auth](https://better-auth.com): `ledgerPlugin` for create/update audit hooks, `createSoftDeleteCallback` for intercepting user deletion, and `createDeleteAuditCallback` for hard-delete audit trails.
+
+---
+
+## Exports
+
+```typescript
+import {
+  ledgerPlugin,
+  createSoftDeleteCallback,
+  createDeleteAuditCallback,
+  SoftDeletePerformedError,
+  isSoftDeletePerformed,
+} from "@rafters/ledger/better-auth";
+```
+
+All five exports come from the same subpath. Import only what you use.
+
+---
+
+## `ledgerPlugin`
+
+Registers `databaseHooks` inside better-auth for the `create.after` and `update.after` lifecycle events on audited tables. Each event fires `writeAuditEntry` as fire-and-forget: errors are logged via `console.error` and never rethrow into the auth flow.
+
+```typescript
+import { betterAuth } from "better-auth";
+import { drizzle } from "drizzle-orm/d1";
+import { uuidv7 } from "uuidv7";
+import { ledgerPlugin } from "@rafters/ledger/better-auth";
+import { auditLog } from "@rafters/ledger/schema/sqlite";
+
+export function buildAuth(env: Env) {
+  const db = drizzle(env.DB);
+
+  return betterAuth({
+    database: drizzle(env.DB),
+    plugins: [
+      ledgerPlugin({
+        auditTables: ["user", "account"],
+        writeAuditEntry: async (entry) => {
+          await db.insert(auditLog).values({
+            id: uuidv7(),
+            tableName: entry.tableName,
+            recordId: entry.recordId,
+            action: entry.action,
+            oldData: entry.oldData ? JSON.stringify(entry.oldData) : null,
+            newData: entry.newData ? JSON.stringify(entry.newData) : null,
+            userId: entry.userId,
+            ip: null,
+            userAgent: null,
+            endpoint: null,
+            requestId: null,
+            createdAt: new Date(),
+          });
+        },
+      }),
+    ],
+  });
+}
+```
+
+### Config
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user", "account"]` | Tables to hook for create/update events. Session and verification are excluded by default due to volume. |
+| `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | `undefined` | Called for each auditable event. If omitted, audit logging is disabled. |
+| `softDeleteTables` | `"user"[]` | `[]` | When `"user"` is included, the plugin registers a `beforeDelete` hook that logs a `SOFT_DELETE` entry. This does not perform the soft-delete; use `createSoftDeleteCallback` for that. |
+
+### `LedgerAuditEntry` shape
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `tableName` | `string` | The table that changed (`"user"`, `"account"`, etc.) |
+| `recordId` | `string` | Primary key of the affected row |
+| `action` | `"INSERT" \| "UPDATE" \| "SOFT_DELETE" \| "DELETE"` | The operation |
+| `oldData` | `Record<string, unknown> \| null` | Row state before the change; `null` for `INSERT` |
+| `newData` | `Record<string, unknown> \| null` | Row state after the change; `null` for `DELETE` or `SOFT_DELETE` |
+| `userId` | `string \| null` | For `user` table events, this is the user's own ID. For `account` events, it is `null`. |
+
+Note: better-auth's `update.after` hook does not expose the previous row state, so `oldData` is always `null` on `UPDATE` entries from this plugin.
+
+---
+
+## `createSoftDeleteCallback`
+
+Creates a `beforeDelete` handler for `user.deleteUser`. When better-auth calls this handler before deleting a user, it:
+
+1. Executes `UPDATE users SET deleted_at = ?, deleted_by = ? WHERE id = ?`
+2. Logs a `SOFT_DELETE` audit entry (if `writeAuditEntry` is provided)
+3. Throws `SoftDeletePerformedError` to abort the hard delete
+
+The throw is the mechanism. better-auth runs `beforeDelete`, sees the throw, and halts. The user row is never removed.
+
+```typescript
+import { eq } from "drizzle-orm";
+import { createSoftDeleteCallback } from "@rafters/ledger/better-auth";
+import { users } from "./schema.ts";
+
+const softDelete = createSoftDeleteCallback({
+  db,
+  userTable: users,
+  whereUserId: (userId) => eq(users.id, userId),
+  writeAuditEntry: async (entry) => {
+    await db.insert(auditLog).values({
+      id: uuidv7(),
+      tableName: entry.tableName,
+      recordId: entry.recordId,
+      action: entry.action,
+      oldData: entry.oldData ? JSON.stringify(entry.oldData) : null,
+      newData: entry.newData ? JSON.stringify(entry.newData) : null,
+      userId: entry.userId,
+      ip: null,
+      userAgent: null,
+      endpoint: null,
+      requestId: null,
+      createdAt: new Date(),
+    });
+  },
+});
+
+export const auth = betterAuth({
+  user: {
+    deleteUser: {
+      enabled: true,
+      beforeDelete: softDelete,
+    },
+  },
+  // ...
+});
+```
+
+### Config
+
+| Option | Type | Required | Description |
+| --- | --- | --- | --- |
+| `db` | Drizzle instance | Yes | Must expose `.update()`. The same instance you use elsewhere. |
+| `userTable` | Drizzle table | Yes | Must have `id` and `deletedAt` columns. If it also has `deletedBy`, that column is set automatically. |
+| `whereUserId` | `(userId: string) => SQL` | Yes | Returns the WHERE clause for the update. |
+| `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | No | Same callback shape as `ledgerPlugin`. Omit to skip audit logging on delete. |
+
+The `deletedBy` column is optional on the table. If it exists, the callback sets it to `null` (the user deleted their own account; there is no acting admin ID available at this point in the better-auth flow). If you need a specific `deletedBy` value, write the callback manually using `softDeleteValues` from `@rafters/ledger/soft-delete`.
+
+---
+
+## Handling `SoftDeletePerformedError`
+
+The throw from `createSoftDeleteCallback` propagates out of `auth.api.deleteUser`. Callers must catch it and treat it as success.
+
+```typescript
+import { isSoftDeletePerformed } from "@rafters/ledger/better-auth";
+
+async function handleDeleteUser(userId: string) {
+  try {
+    await auth.api.deleteUser({ body: { userId } });
+  } catch (error) {
+    if (isSoftDeletePerformed(error)) {
+      // The user was soft-deleted. This is the expected outcome.
+      return { success: true, userId };
+    }
+    throw error;
+  }
+}
+```
+
+`isSoftDeletePerformed` handles two cases: a live `SoftDeletePerformedError` instance in the same runtime, and a serialized plain object with `code: "SOFT_DELETE_PERFORMED"` and `softDeleted: true` that crossed a module boundary or was deserialized from JSON. Both return `true`.
+
+### `SoftDeletePerformedError` properties
+
+| Property | Type | Value |
+| --- | --- | --- |
+| `code` | `string` | `"SOFT_DELETE_PERFORMED"` |
+| `softDeleted` | `boolean` | `true` |
+| `userId` | `string` | The ID of the user that was soft-deleted |
+| `message` | `string` | `"User soft-deleted successfully"` |
+| `name` | `string` | `"SoftDeletePerformedError"` |
+
+---
+
+## `createDeleteAuditCallback`
+
+For cases where you want hard delete (the user row is permanently removed) but still need an audit trail. This goes in `afterDelete`, not `beforeDelete`. It logs a `DELETE` entry and returns normally without throwing.
+
+```typescript
+import { createDeleteAuditCallback } from "@rafters/ledger/better-auth";
+
+export const auth = betterAuth({
+  user: {
+    deleteUser: {
+      enabled: true,
+      afterDelete: createDeleteAuditCallback(async (entry) => {
+        await db.insert(auditLog).values({
+          id: uuidv7(),
+          tableName: entry.tableName,
+          recordId: entry.recordId,
+          action: entry.action,
+          oldData: entry.oldData ? JSON.stringify(entry.oldData) : null,
+          newData: null,
+          userId: entry.userId,
+          ip: null,
+          userAgent: null,
+          endpoint: null,
+          requestId: null,
+          createdAt: new Date(),
+        });
+      }),
+    },
+  },
+});
+```
+
+Errors inside `writeAuditEntry` are caught and logged; they do not propagate. The hard delete has already happened by the time `afterDelete` fires, so there is nothing left to abort.
+
+Do not use `createDeleteAuditCallback` and `createSoftDeleteCallback` on the same `deleteUser` config. `createSoftDeleteCallback` goes in `beforeDelete` and throws to prevent deletion. `createDeleteAuditCallback` goes in `afterDelete` and assumes deletion happened. Pick one.
+
+---
+
+## Full Setup
+
+A complete `betterAuth` config with the plugin, soft-delete callback, and the user table wired correctly.
+
+```typescript
+import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { drizzle } from "drizzle-orm/d1";
+import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { eq } from "drizzle-orm";
+import { uuidv7 } from "uuidv7";
+import {
+  ledgerPlugin,
+  createSoftDeleteCallback,
+} from "@rafters/ledger/better-auth";
+import { softDeleteColumns } from "@rafters/ledger/soft-delete/sqlite";
+import { auditLog } from "@rafters/ledger/schema/sqlite";
+
+// Schema
+export const users = sqliteTable("user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+  image: text("image"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  ...softDeleteColumns,
+});
+
+// Auth factory
+export function buildAuth(env: Env) {
+  const db = drizzle(env.DB, { schema: { users, auditLog } });
+
+  async function writeAuditEntry(entry: Parameters<typeof ledgerPlugin>[0]["writeAuditEntry"] extends (e: infer E) => unknown ? E : never) {
+    await db.insert(auditLog).values({
+      id: uuidv7(),
+      tableName: entry.tableName,
+      recordId: entry.recordId,
+      action: entry.action,
+      oldData: entry.oldData ? JSON.stringify(entry.oldData) : null,
+      newData: entry.newData ? JSON.stringify(entry.newData) : null,
+      userId: entry.userId,
+      ip: null,
+      userAgent: null,
+      endpoint: null,
+      requestId: null,
+      createdAt: new Date(),
+    });
+  }
+
+  return betterAuth({
+    database: drizzleAdapter(db, { provider: "sqlite" }),
+    user: {
+      deleteUser: {
+        enabled: true,
+        beforeDelete: createSoftDeleteCallback({
+          db,
+          userTable: users,
+          whereUserId: (userId) => eq(users.id, userId),
+          writeAuditEntry,
+        }),
+      },
+    },
+    plugins: [
+      ledgerPlugin({
+        auditTables: ["user", "account"],
+        writeAuditEntry,
+      }),
+    ],
+  });
+}
+```
+
+In this setup:
+
+- User and account creates/updates write `INSERT` and `UPDATE` audit entries via `ledgerPlugin`.
+- `auth.api.deleteUser` triggers the soft-delete callback, sets `deleted_at` on the user row, writes a `SOFT_DELETE` audit entry, and throws `SoftDeletePerformedError`.
+- Callers catch that error with `isSoftDeletePerformed` and treat it as success.
+- The user row is preserved. Hard delete never runs.
+
+---
+
+## Relation to `createAuditedDb`
+
+`ledgerPlugin` and `createSoftDeleteCallback` are better-auth-specific. They fire from better-auth lifecycle hooks, not from Drizzle operations.
+
+`createAuditedDb` (from `@rafters/ledger/db`) intercepts `db.delete()` calls on your Drizzle instance and converts them to soft-delete updates automatically. These two systems are independent. `createAuditedDb` does not affect better-auth's internal delete operations, and `createSoftDeleteCallback` does not affect your application's direct Drizzle calls.
+
+Use both if you want full coverage: `createAuditedDb` handles application-layer deletes on any table; `createSoftDeleteCallback` handles the specific path through `auth.api.deleteUser`.

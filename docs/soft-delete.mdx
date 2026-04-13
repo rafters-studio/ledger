@@ -1,0 +1,310 @@
+# Soft Delete
+
+`@rafters/ledger` implements soft-delete as a first-class pattern: columns that record when and by whom a record was removed, query filters that enforce visibility, and an optional database wrapper that intercepts `delete()` calls automatically.
+
+---
+
+## Column Definitions
+
+Soft-delete columns are dialect-specific. Import from the subpath that matches your database.
+
+```typescript
+// SQLite / Cloudflare D1
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/sqlite';
+
+// PostgreSQL
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/pg';
+
+// MySQL
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/mysql';
+```
+
+`softDeleteColumns` adds both `deletedAt` and `deletedBy`. `softDeleteTimestamp` adds `deletedAt` only, for tables where attribution is not needed.
+
+```typescript
+import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { softDeleteColumns } from '@rafters/ledger/soft-delete/sqlite';
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  name: text('name'),
+  ...softDeleteColumns,
+});
+```
+
+```typescript
+import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { softDeleteTimestamp } from '@rafters/ledger/soft-delete/sqlite';
+
+export const events = sqliteTable('events', {
+  id: text('id').primaryKey(),
+  type: text('type'),
+  ...softDeleteTimestamp,
+});
+```
+
+### Dialect column types
+
+| Dialect | `deletedAt` column type | `deletedBy` column type |
+| ------- | ----------------------- | ----------------------- |
+| SQLite / D1 | `integer` with `mode: "timestamp_ms"` | `text` |
+| PostgreSQL | `timestamp` with timezone | `text` |
+| MySQL | `timestamp` | `varchar(255)` |
+
+SQLite stores the timestamp as an integer millisecond value. Drizzle reads it back as a `Date`. PostgreSQL uses `timestamptz` to preserve timezone information across regions. All three dialects store `deletedBy` as a plain string, matching UUIDv7 user identifiers.
+
+---
+
+## Query Filters
+
+Three filters cover every visibility case. Import from `@rafters/ledger/soft-delete`.
+
+```typescript
+import {
+  notDeleted,
+  onlyDeleted,
+  includingDeleted,
+} from '@rafters/ledger/soft-delete';
+```
+
+### `notDeleted(table)`
+
+Produces `WHERE deleted_at IS NULL`. Use this in every query that should exclude removed records.
+
+```typescript
+const activeUsers = await db
+  .select()
+  .from(users)
+  .where(notDeleted(users));
+```
+
+This is the filter you will use most. If a query touches a soft-deletable table and does not call `notDeleted`, it will return deleted records. Make it a habit.
+
+### `onlyDeleted(table)`
+
+Produces `WHERE deleted_at IS NOT NULL`. Use this for trash views or admin recovery interfaces.
+
+```typescript
+const deletedUsers = await db
+  .select()
+  .from(users)
+  .where(onlyDeleted(users));
+```
+
+### `includingDeleted()`
+
+Produces `1=1`. Explicitly returns all records regardless of deletion state. Useful when you want to be explicit that deleted records are intentionally included.
+
+```typescript
+const allUsers = await db
+  .select()
+  .from(users)
+  .where(includingDeleted());
+```
+
+`includingDeleted` takes no arguments. It is not table-aware; it just returns a SQL fragment that never excludes any row.
+
+---
+
+## Manual Soft-Delete
+
+For direct control over update queries, three functions handle the value construction and record inspection.
+
+```typescript
+import {
+  softDeleteValues,
+  restoreValues,
+  isSoftDeleted,
+} from '@rafters/ledger/soft-delete';
+```
+
+### `softDeleteValues(deletedBy?)`
+
+Returns `{ deletedAt: Date, deletedBy: string | null }` set to the current timestamp. Pass a user ID string to record attribution; omit it or pass `null` when the deletion is system-initiated.
+
+```typescript
+await db
+  .update(users)
+  .set(softDeleteValues(currentUserId))
+  .where(eq(users.id, userId));
+```
+
+```typescript
+// System-initiated deletion, no attribution
+await db
+  .update(users)
+  .set(softDeleteValues())
+  .where(eq(users.organizationId, orgId));
+```
+
+### `restoreValues()`
+
+Returns `{ deletedAt: null, deletedBy: null }`. Use in update queries to reverse a soft-delete.
+
+```typescript
+await db
+  .update(users)
+  .set(restoreValues())
+  .where(eq(users.id, userId));
+```
+
+After a restore, `notDeleted(users)` will include the record again.
+
+### `isSoftDeleted(record)`
+
+Runtime check on a record object. Returns `true` if `deletedAt` is non-null.
+
+```typescript
+const user = await db.select().from(users).where(eq(users.id, userId)).get();
+
+if (isSoftDeleted(user)) {
+  throw new Error('User account has been deactivated.');
+}
+```
+
+`isSoftDeleted` accepts `null` and `undefined` safely; both return `false`.
+
+---
+
+## Automatic Soft-Delete with `createAuditedDb`
+
+`createAuditedDb` wraps a Drizzle database instance and intercepts `db.delete()` calls. The call site does not change: `db.delete(users).where(...)` looks identical whether or not the table has a `deletedAt` column. The behavior changes based on table schema.
+
+```typescript
+import { drizzle } from 'drizzle-orm/d1';
+import { createAuditedDb } from '@rafters/ledger/db';
+
+const baseDb = drizzle(env.DB);
+export const db = createAuditedDb(baseDb);
+```
+
+### How the interception works
+
+When `db.delete(table)` is called:
+
+1. The wrapper checks if the table has a `deletedAt` column using `hasColumn`.
+2. If yes: the delete becomes `db.update(table).set({ deletedAt: ..., deletedBy: ... }).where(condition)`.
+3. If no: the original `db.delete` executes unchanged.
+
+The `deletedBy` value comes from the active ledger context automatically. If `runWithLedgerContext` is set up in middleware with the current user ID, the wrapper reads it without any additional wiring at the call site.
+
+```typescript
+// This is the only call site you write:
+await db.delete(users).where(eq(users.id, userId));
+
+// With createAuditedDb, the above executes as:
+// UPDATE users SET deleted_at = ?, deleted_by = ? WHERE id = ?
+// with deleted_by pulled from the active ledger context
+```
+
+### Tables without `deletedAt`
+
+Tables that do not include soft-delete columns receive a genuine hard delete. No configuration needed.
+
+```typescript
+const logs = sqliteTable('logs', {
+  id: text('id').primaryKey(),
+  message: text('message'),
+  // no deletedAt column
+});
+
+// This hard-deletes, unaffected by the wrapper:
+await db.delete(logs).where(eq(logs.id, logId));
+```
+
+### `hardDeleteTables` config
+
+Some tables should always hard-delete even if they have a `deletedAt` column. Session and verification tables are the common case: you want those rows gone, not flagged.
+
+```typescript
+export const db = createAuditedDb(baseDb, {
+  hardDeleteTables: ['session', 'verification'],
+});
+```
+
+Pass the SQL table name string, not the Drizzle table variable name. The wrapper reads the table name from the Drizzle internal symbol `drizzle:Name`.
+
+### Full setup with context middleware
+
+```typescript
+import { drizzle } from 'drizzle-orm/d1';
+import { createAuditedDb } from '@rafters/ledger/db';
+import {
+  runWithLedgerContext,
+  createLedgerContext,
+} from '@rafters/ledger/context';
+
+const baseDb = drizzle(env.DB);
+export const db = createAuditedDb(baseDb, {
+  hardDeleteTables: ['session', 'verification'],
+});
+
+// In Hono middleware:
+app.use(async (c, next) => {
+  const context = createLedgerContext({
+    userId: c.get('user')?.id ?? null,
+    ip: c.req.header('x-forwarded-for') ?? null,
+    userAgent: c.req.header('user-agent') ?? null,
+    endpoint: `${c.req.method} ${c.req.path}`,
+  });
+  return runWithLedgerContext(context, next);
+});
+```
+
+Any `db.delete(users)` call inside a request handler now reads the user ID from the async context automatically. No plumbing through function parameters.
+
+### `returning()` and `execute()`
+
+The soft-delete path returns a query chain that supports both `.returning()` and `.execute()`.
+
+```typescript
+const [deleted] = await db
+  .delete(users)
+  .where(eq(users.id, userId))
+  .returning();
+
+// deleted.deletedAt is populated
+```
+
+---
+
+## Type Helpers
+
+Two utility types add soft-delete fields to an existing record type.
+
+```typescript
+import type {
+  WithSoftDelete,
+  WithSoftDeleteTimestamp,
+} from '@rafters/ledger/soft-delete';
+```
+
+### `WithSoftDelete<T>`
+
+Adds `deletedAt: Date | null` and `deletedBy: string | null` to `T`.
+
+```typescript
+type User = {
+  id: string;
+  name: string;
+};
+
+type UserWithSoftDelete = WithSoftDelete<User>;
+// { id: string; name: string; deletedAt: Date | null; deletedBy: string | null }
+```
+
+### `WithSoftDeleteTimestamp<T>`
+
+Adds `deletedAt: Date | null` only.
+
+```typescript
+type Event = {
+  id: string;
+  type: string;
+};
+
+type EventWithTimestamp = WithSoftDeleteTimestamp<Event>;
+// { id: string; type: string; deletedAt: Date | null }
+```
+
+These types are useful when constructing function signatures or response types that need to express soft-delete state without importing the full Drizzle column definitions.

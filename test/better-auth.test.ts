@@ -12,7 +12,7 @@ describe("ledgerPlugin", () => {
   test("returns a valid BetterAuthPlugin", () => {
     const plugin = ledgerPlugin();
 
-    expect(plugin.id).toBe("drizzle-ledger");
+    expect(plugin.id).toBe("ledger");
     expect(plugin.init).toBeDefined();
     expect(typeof plugin.init).toBe("function");
   });
@@ -173,10 +173,7 @@ describe("ledgerPlugin", () => {
       userHooks?.create?.after?.({ id: "user-123", email: "test@test.com" }),
     ).resolves.toBeUndefined();
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[drizzle-ledger]"),
-      expect.any(Error),
-    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("[ledger]"), expect.any(Error));
 
     consoleSpy.mockRestore();
   });
@@ -368,10 +365,7 @@ describe("createDeleteAuditCallback", () => {
     // Should not throw
     await expect(callback(user)).resolves.toBeUndefined();
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[drizzle-ledger]"),
-      expect.any(Error),
-    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("[ledger]"), expect.any(Error));
 
     consoleSpy.mockRestore();
   });
