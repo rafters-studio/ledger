@@ -1,6 +1,6 @@
 {
   "name": "@rafters/ledger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Soft-delete, audit trail, and GDPR compliance for any ORM",
   "type": "module",
   "exports": {
