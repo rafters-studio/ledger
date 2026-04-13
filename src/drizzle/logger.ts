@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from "drizzle-orm";
-import { getLedgerContext } from "./context.js";
+import { getLedgerContext } from "../core/context.js";
 
 /**
  * Parsed query information.

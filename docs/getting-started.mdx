@@ -1,6 +1,6 @@
 # Getting Started with @rafters/ledger
 
-Drizzle Ledger adds soft-delete, audit trail, and GDPR support to any Drizzle ORM project. It works against the standard Drizzle query builder; there is no schema migration runner or ORM replacement involved.
+`@rafters/ledger` adds soft-delete, audit trail, and GDPR support to any Drizzle ORM project. It works against the standard Drizzle query builder; there is no schema migration runner or ORM replacement involved.
 
 This guide walks through the five steps to get a fully working setup: choosing your dialect, adding soft-delete columns, creating the audit log table, wiring context through your middleware, and wrapping the database instance.
 
@@ -8,13 +8,13 @@ This guide walks through the five steps to get a fully working setup: choosing y
 
 ## 1. Pick Your Dialect
 
-Everything is dialect-specific. Import from the subpath that matches your database.
+Dialect-specific pieces import from subpaths under `@rafters/ledger/drizzle`. Everything else imports from `@rafters/ledger`.
 
-| Database              | Soft-delete columns                          | Audit log schema                          |
-| --------------------- | -------------------------------------------- | ----------------------------------------- |
-| SQLite / Cloudflare D1 | `@rafters/ledger/soft-delete/sqlite` | `@rafters/ledger/schema/sqlite`   |
-| PostgreSQL            | `@rafters/ledger/soft-delete/pg`     | `@rafters/ledger/schema/pg`       |
-| MySQL                 | `@rafters/ledger/soft-delete/mysql`  | `@rafters/ledger/schema/mysql`    |
+| Database              | Soft-delete columns                                          | Audit log schema                                          |
+| --------------------- | ------------------------------------------------------------ | --------------------------------------------------------- |
+| SQLite / Cloudflare D1 | `@rafters/ledger/drizzle/soft-delete/sqlite`         | `@rafters/ledger/drizzle/schema/sqlite`           |
+| PostgreSQL            | `@rafters/ledger/drizzle/soft-delete/pg`             | `@rafters/ledger/drizzle/schema/pg`               |
+| MySQL                 | `@rafters/ledger/drizzle/soft-delete/mysql`          | `@rafters/ledger/drizzle/schema/mysql`            |
 
 All three dialects export the same surface: `softDeleteColumns`, `softDeleteTimestamp`, `auditLog`, and `createAuditLogTable`. The column types differ; the API does not.
 
@@ -26,7 +26,7 @@ Spread `softDeleteColumns` into any table definition that should support soft-de
 
 ```typescript
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { softDeleteColumns } from "@rafters/ledger/soft-delete/sqlite";
+import { softDeleteColumns } from "@rafters/ledger/drizzle/soft-delete/sqlite";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -41,7 +41,7 @@ The resulting table has two additional columns: `deleted_at` (integer, timestamp
 If you do not need to track who deleted a record, use `softDeleteTimestamp` instead. It adds only `deletedAt`.
 
 ```typescript
-import { softDeleteTimestamp } from "@rafters/ledger/soft-delete/sqlite";
+import { softDeleteTimestamp } from "@rafters/ledger/drizzle/soft-delete/sqlite";
 
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
@@ -58,7 +58,7 @@ Import the `auditLog` table from the schema subpath and include it in your Drizz
 
 ```typescript
 // src/db/schema.ts
-export { auditLog } from "@rafters/ledger/schema/sqlite";
+export { auditLog } from "@rafters/ledger/drizzle/schema/sqlite";
 export { users } from "./users.ts";
 export { sessions } from "./sessions.ts";
 ```
@@ -66,7 +66,7 @@ export { sessions } from "./sessions.ts";
 If you need a custom table name (for example, to avoid conflicts with an existing `audit_log` table), use `createAuditLogTable`.
 
 ```typescript
-import { createAuditLogTable } from "@rafters/ledger/schema/sqlite";
+import { createAuditLogTable } from "@rafters/ledger/drizzle/schema/sqlite";
 
 export const activityLog = createAuditLogTable("activity_log");
 ```
@@ -99,7 +99,7 @@ wrangler d1 migrations apply
 The `AUDIT_LOG_INDEXES` export contains the four recommended index statements. Add them to the migration or run them separately.
 
 ```typescript
-import { AUDIT_LOG_INDEXES } from "@rafters/ledger/schema/sqlite";
+import { AUDIT_LOG_INDEXES } from "@rafters/ledger/drizzle/schema/sqlite";
 // CREATE INDEX IF NOT EXISTS idx_audit_log_table_record ON audit_log(table_name, record_id)
 // CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)
 // CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)
@@ -117,7 +117,7 @@ import { Hono } from "hono";
 import {
   createLedgerContext,
   runWithLedgerContext,
-} from "@rafters/ledger/context";
+} from "@rafters/ledger";
 
 const app = new Hono();
 
@@ -142,7 +142,7 @@ For cron jobs, background workers, and other operations that have no request con
 import {
   createSystemContext,
   runWithLedgerContext,
-} from "@rafters/ledger/context";
+} from "@rafters/ledger";
 
 // In a Cloudflare Workers scheduled handler
 export default {
@@ -165,7 +165,7 @@ export default {
 
 ```typescript
 import { drizzle } from "drizzle-orm/d1";
-import { createAuditedDb } from "@rafters/ledger/db";
+import { createAuditedDb } from "@rafters/ledger/drizzle";
 import * as schema from "./schema.ts";
 
 export function buildDb(d1: D1Database) {
@@ -197,8 +197,8 @@ The `deleted_by` value comes from the ledger context automatically. No changes t
 
 The full behavior of each subsystem is documented separately.
 
-- [soft-delete.md](./soft-delete.md): Querying live records, restoring soft-deleted rows, and handling the `deletedAt` filter.
-- [audit-trail.md](./audit-trail.md): Writing audit entries manually, querying history for a record, and correlating entries by request ID.
-- [context.md](./context.md): The full `LedgerContext` shape, custom context factories, and using `getLedgerContext()` in handlers.
-- [gdpr.md](./gdpr.md): Anonymizing and erasing user data across multiple tables in a single operation.
-- [better-auth.md](./better-auth.md): The `ledgerPlugin` for better-auth that writes audit entries on sign-in, sign-out, and credential changes.
+- [soft-delete.mdx](./soft-delete.mdx): Querying live records, restoring soft-deleted rows, and handling the `deletedAt` filter.
+- [audit-trail.mdx](./audit-trail.mdx): Writing audit entries manually, querying history for a record, and correlating entries by request ID.
+- [context.mdx](./context.mdx): The full `LedgerContext` shape, custom context factories, and using `getLedgerContext()` in handlers.
+- [gdpr.mdx](./gdpr.mdx): Anonymizing and erasing user data across multiple tables in a single operation.
+- [better-auth.mdx](./better-auth.mdx): The `ledgerPlugin` for better-auth that writes audit entries on sign-in, sign-out, and credential changes.
