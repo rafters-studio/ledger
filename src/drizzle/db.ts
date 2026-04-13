@@ -5,8 +5,8 @@
  * convert delete() calls to soft-delete for tables with deletedAt column.
  */
 
-import { getLedgerContext } from "./core/context.js";
-import { softDeleteValues } from "./core/soft-delete.js";
+import { getLedgerContext } from "../core/context.js";
+import { softDeleteValues } from "../core/soft-delete.js";
 
 /**
  * Configuration for createAuditedDb.

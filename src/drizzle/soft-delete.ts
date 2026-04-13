@@ -1,16 +1,16 @@
 /**
- * Drizzle Ledger Soft Delete
+ * Ledger Soft Delete - Drizzle Adapter
  *
- * Dialect-agnostic helpers for implementing soft-delete patterns in Drizzle.
+ * Drizzle ORM query filters for soft-delete patterns.
  * For column definitions, import from the dialect-specific module:
- * - ledger/soft-delete/sqlite
- * - ledger/soft-delete/pg
- * - ledger/soft-delete/mysql
+ * - ledger/drizzle/soft-delete/sqlite
+ * - ledger/drizzle/soft-delete/pg
+ * - ledger/drizzle/soft-delete/mysql
  */
 
 import { type Column, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
 
-// Re-export pure helpers from core
+// Re-export pure helpers from core for convenience
 export {
   isSoftDeleted,
   restoreValues,
