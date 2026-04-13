@@ -29,7 +29,7 @@ import { betterAuth } from "better-auth";
 import { drizzle } from "drizzle-orm/d1";
 import { uuidv7 } from "uuidv7";
 import { ledgerPlugin } from "@rafters/ledger/better-auth";
-import { auditLog } from "@rafters/ledger/schema/sqlite";
+import { auditLog } from "@rafters/ledger/drizzle/schema/sqlite";
 
 export function buildAuth(env: Env) {
   const db = drizzle(env.DB);
@@ -141,7 +141,7 @@ export const auth = betterAuth({
 | `whereUserId` | `(userId: string) => SQL` | Yes | Returns the WHERE clause for the update. |
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | No | Same callback shape as `ledgerPlugin`. Omit to skip audit logging on delete. |
 
-The `deletedBy` column is optional on the table. If it exists, the callback sets it to `null` (the user deleted their own account; there is no acting admin ID available at this point in the better-auth flow). If you need a specific `deletedBy` value, write the callback manually using `softDeleteValues` from `@rafters/ledger/soft-delete`.
+The `deletedBy` column is optional on the table. If it exists, the callback sets it to `null` (the user deleted their own account; there is no acting admin ID available at this point in the better-auth flow). If you need a specific `deletedBy` value, write the callback manually using `softDeleteValues` from `@rafters/ledger`.
 
 ---
 
@@ -232,8 +232,8 @@ import {
   ledgerPlugin,
   createSoftDeleteCallback,
 } from "@rafters/ledger/better-auth";
-import { softDeleteColumns } from "@rafters/ledger/soft-delete/sqlite";
-import { auditLog } from "@rafters/ledger/schema/sqlite";
+import { softDeleteColumns } from "@rafters/ledger/drizzle/soft-delete/sqlite";
+import { auditLog } from "@rafters/ledger/drizzle/schema/sqlite";
 
 // Schema
 export const users = sqliteTable("user", {
@@ -304,6 +304,6 @@ In this setup:
 
 `ledgerPlugin` and `createSoftDeleteCallback` are better-auth-specific. They fire from better-auth lifecycle hooks, not from Drizzle operations.
 
-`createAuditedDb` (from `@rafters/ledger/db`) intercepts `db.delete()` calls on your Drizzle instance and converts them to soft-delete updates automatically. These two systems are independent. `createAuditedDb` does not affect better-auth's internal delete operations, and `createSoftDeleteCallback` does not affect your application's direct Drizzle calls.
+`createAuditedDb` (from `@rafters/ledger/drizzle`) intercepts `db.delete()` calls on your Drizzle instance and converts them to soft-delete updates automatically. These two systems are independent. `createAuditedDb` does not affect better-auth's internal delete operations, and `createSoftDeleteCallback` does not affect your application's direct Drizzle calls.
 
 Use both if you want full coverage: `createAuditedDb` handles application-layer deletes on any table; `createSoftDeleteCallback` handles the specific path through `auth.api.deleteUser`.

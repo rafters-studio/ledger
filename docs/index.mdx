@@ -31,8 +31,8 @@ This example uses SQLite / Cloudflare D1. Postgres and MySQL use different impor
 ```typescript
 // src/db/schema.ts
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { softDeleteColumns } from '@rafters/ledger/soft-delete/sqlite';
-import { auditLog } from '@rafters/ledger/schema/sqlite';
+import { softDeleteColumns } from '@rafters/ledger/drizzle/soft-delete/sqlite';
+import { auditLog } from '@rafters/ledger/drizzle/schema/sqlite';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -50,7 +50,7 @@ export { auditLog };
 
 ```typescript
 // src/middleware/ledger.ts
-import { createLedgerContext, runWithLedgerContext } from '@rafters/ledger/context';
+import { createLedgerContext, runWithLedgerContext } from '@rafters/ledger';
 
 // Hono example; adapt to your framework
 app.use(async (c, next) => {
@@ -71,7 +71,7 @@ app.use(async (c, next) => {
 ```typescript
 // src/db/index.ts
 import { drizzle } from 'drizzle-orm/d1';
-import { createAuditedDb } from '@rafters/ledger/db';
+import { createAuditedDb } from '@rafters/ledger/drizzle';
 import * as schema from './schema';
 
 export function createDb(d1: D1Database) {
@@ -92,7 +92,7 @@ export function createDb(d1: D1Database) {
 ### 4. Querying
 
 ```typescript
-import { notDeleted } from '@rafters/ledger/soft-delete';
+import { notDeleted } from '@rafters/ledger/drizzle';
 
 // Only active users
 const activeUsers = await db
@@ -107,7 +107,7 @@ await db.delete(users).where(eq(users.id, userId));
 ### 5. GDPR purge
 
 ```typescript
-import { purgeUserData } from '@rafters/ledger/gdpr';
+import { purgeUserData } from '@rafters/ledger';
 
 const result = await purgeUserData(db, auditLog, userId, {
   piiFields: ['email', 'name', 'phone', 'ip', 'userAgent'],
@@ -123,11 +123,11 @@ Strips the specified fields from `oldData` and `newData` JSON columns in every a
 
 | Dialect | Soft-delete columns | Audit log schema |
 |---|---|---|
-| SQLite / D1 | `@rafters/ledger/soft-delete/sqlite` | `@rafters/ledger/schema/sqlite` |
-| PostgreSQL | `@rafters/ledger/soft-delete/pg` | `@rafters/ledger/schema/pg` |
-| MySQL | `@rafters/ledger/soft-delete/mysql` | `@rafters/ledger/schema/mysql` |
+| SQLite / D1 | `@rafters/ledger/drizzle/soft-delete/sqlite` | `@rafters/ledger/drizzle/schema/sqlite` |
+| PostgreSQL | `@rafters/ledger/drizzle/soft-delete/pg` | `@rafters/ledger/drizzle/schema/pg` |
+| MySQL | `@rafters/ledger/drizzle/soft-delete/mysql` | `@rafters/ledger/drizzle/schema/mysql` |
 
-Dialect-agnostic helpers (`notDeleted`, `onlyDeleted`, `softDeleteValues`, `restoreValues`, `isSoftDeleted`) import from `@rafters/ledger/soft-delete`.
+Dialect-agnostic query filters (`notDeleted`, `onlyDeleted`) import from `@rafters/ledger/drizzle`. Pure helpers (`softDeleteValues`, `restoreValues`, `isSoftDeleted`) import from `@rafters/ledger`.
 
 ---
 
@@ -137,11 +137,12 @@ Full documentation lives in [docs/](./docs/):
 
 | File | Covers |
 |---|---|
-| `soft-delete.md` | Column helpers, query filters, restore, unique constraint considerations |
-| `audit.md` | Manual logging, AuditLogger, context propagation, SOC 2 notes |
-| `gdpr.md` | `purgeUserData`, `isUserDataPurged`, what it handles and what it does not |
-| `better-auth.md` | `ledgerPlugin`, `createSoftDeleteCallback`, flow control pattern |
-| `db.md` | `createAuditedDb` config, `hardDeleteTables`, custom soft-delete values |
+| `getting-started.mdx` | End-to-end setup: dialect selection, columns, audit table, context, db wrapper |
+| `soft-delete.mdx` | Column helpers, query filters, restore, unique constraint considerations |
+| `audit-trail.mdx` | Manual logging, AuditLogger, context propagation, SOC 2 notes |
+| `gdpr.mdx` | `purgeUserData`, `isUserDataPurged`, what it handles and what it does not |
+| `better-auth.mdx` | `ledgerPlugin`, `createSoftDeleteCallback`, flow control pattern |
+| `api-reference.mdx` | Every export, organized by entry point |
 
 ---
 

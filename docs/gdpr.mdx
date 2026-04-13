@@ -23,9 +23,11 @@ The audit trail remains queryable. `tableName`, `action`, `recordId`, `endpoint`
 
 ## Basic Usage
 
+`purgeUserData` imports from `@rafters/ledger`. The audit log schema imports from `@rafters/ledger/drizzle/schema/sqlite` (or `/pg`, `/mysql`).
+
 ```typescript
-import { purgeUserData } from '@rafters/ledger/gdpr';
-import { auditLog } from '@rafters/ledger/schema/sqlite';
+import { purgeUserData } from '@rafters/ledger';
+import { auditLog } from '@rafters/ledger/drizzle/schema/sqlite';
 
 const result = await purgeUserData(db, auditLog, userId, {
   piiFields: ['email', 'name', 'phone', 'address', 'ip', 'userAgent'],
@@ -145,10 +147,10 @@ const result = await purgeUserData(db, auditLog, userId, {
 
 Field matching is by exact key name. Nested objects are processed recursively, so `{ "contact": { "email": "..." } }` is handled correctly without listing `contact.email` separately.
 
-If you need the stripping function standalone (for anonymizing data outside the audit log, for example), `anonymizeJsonData` is exported directly:
+If you need the stripping function standalone (for anonymizing data outside the audit log, for example), `anonymizeJsonData` is exported from `@rafters/ledger`:
 
 ```typescript
-import { anonymizeJsonData } from '@rafters/ledger/gdpr';
+import { anonymizeJsonData } from '@rafters/ledger';
 
 const raw = { id: 'rec-123', email: 'alice@example.com', name: 'Alice', role: 'admin' };
 const clean = anonymizeJsonData(raw, ['email', 'name']);
@@ -166,8 +168,8 @@ const clean = anonymizeJsonData(raw, ['email', 'name']);
 If your erasure workflow runs in a queue or retry loop, check before acting to avoid unnecessary work:
 
 ```typescript
-import { isUserDataPurged, purgeUserData } from '@rafters/ledger/gdpr';
-import { auditLog } from '@rafters/ledger/schema/sqlite';
+import { isUserDataPurged, purgeUserData } from '@rafters/ledger';
+import { auditLog } from '@rafters/ledger/drizzle/schema/sqlite';
 
 async function handleErasureRequest(db: DrizzleDb, userId: string) {
   const alreadyPurged = await isUserDataPurged(db, auditLog, userId);

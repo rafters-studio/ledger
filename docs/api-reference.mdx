@@ -1,22 +1,27 @@
 # API Reference
 
-`@rafters/ledger` — soft-delete, audit trail, and GDPR compliance for Drizzle ORM.
+`@rafters/ledger` is organized across three entry points. Import from the entry point that owns the export; do not rely on the root barrel for tree-shaking in edge environments.
 
-Each subpath is a separate entry point. Import only what you need; nothing in the subpaths cross-imports each other except through the root barrel.
+| Entry point | Owns |
+|---|---|
+| `@rafters/ledger` | Core: context, pure soft-delete helpers, pure audit entry construction, GDPR utilities, types |
+| `@rafters/ledger/drizzle` | Drizzle adapter: schema, `createAuditedDb`, query filters, manual log functions, `AuditLogger` |
+| `@rafters/ledger/better-auth` | better-auth integration: `ledgerPlugin`, `createSoftDeleteCallback`, `createDeleteAuditCallback` |
+
+Dialect-specific column definitions live at sub-subpaths of the Drizzle adapter:
+
+| Subpath | Exports |
+|---|---|
+| `@rafters/ledger/drizzle/soft-delete/sqlite` | `softDeleteColumns`, `softDeleteTimestamp` for SQLite/D1 |
+| `@rafters/ledger/drizzle/soft-delete/pg` | `softDeleteColumns`, `softDeleteTimestamp` for PostgreSQL |
+| `@rafters/ledger/drizzle/soft-delete/mysql` | `softDeleteColumns`, `softDeleteTimestamp` for MySQL |
+| `@rafters/ledger/drizzle/schema/sqlite` | `auditLog`, `createAuditLogTable`, `AUDIT_LOG_INDEXES` for SQLite/D1 |
+| `@rafters/ledger/drizzle/schema/pg` | `auditLog`, `createAuditLogTable`, `AUDIT_LOG_INDEXES` for PostgreSQL |
+| `@rafters/ledger/drizzle/schema/mysql` | `auditLog`, `createAuditLogTable`, `AUDIT_LOG_INDEXES` for MySQL |
 
 ---
 
-## `@rafters/ledger`
-
-Root barrel. Re-exports everything from all subpaths.
-
----
-
-## `@rafters/ledger/context`
-
-AsyncLocalStorage-based context propagation. Cloudflare Workers compatible; does not import from `node:async_hooks`. Degrades gracefully when `AsyncLocalStorage` is unavailable.
-
----
+## Core (`@rafters/ledger`)
 
 ### `createLedgerContext(options): LedgerContext`
 
@@ -67,9 +72,214 @@ Returns `true` if a context is active in the current async scope.
 
 ---
 
-## `@rafters/ledger/soft-delete`
+### `softDeleteValues(deletedBy?): { deletedAt: Date; deletedBy: string | null }`
 
-Dialect-agnostic query helpers. No column definitions; import those from a dialect subpath.
+Returns the values object to pass to `.set()` when soft-deleting a record. Sets `deletedAt` to the current time.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `deletedBy` | `string \| null \| undefined` | User ID performing the delete |
+
+---
+
+### `restoreValues(): { deletedAt: null; deletedBy: null }`
+
+Returns the values object to pass to `.set()` when restoring a soft-deleted record. Nulls both `deletedAt` and `deletedBy`.
+
+---
+
+### `isSoftDeleted(record): boolean`
+
+Returns `true` if the record's `deletedAt` is non-null. Returns `false` for `null` or `undefined` input.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `record` | `{ deletedAt: Date \| null } \| null \| undefined` | Record to check |
+
+---
+
+### `createAuditEntry(options): AuditLogEntry`
+
+Creates an `AuditLogEntry` object without inserting it. Pulls context from AsyncLocalStorage unless `options.context` is provided. Generates a UUIDv7 for the `id` field.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `options.tableName` | `string` | Table that was modified |
+| `options.recordId` | `string` | Primary key of the affected record |
+| `options.action` | `AuditAction` | Operation type |
+| `options.oldData` | `Record<string, unknown> \| null \| undefined` | Data before the change |
+| `options.newData` | `Record<string, unknown> \| null \| undefined` | Data after the change |
+| `options.context` | `LedgerContext \| null \| undefined` | Override context; falls back to AsyncLocalStorage |
+
+---
+
+### `purgeUserData(db, auditTable, userId, config?): Promise<PurgeResult>`
+
+Finds all audit entries where `userId` matches (actor) or `recordId` matches (subject), then:
+
+1. Replaces `userId` with `anonymizedUserId` on entries the user created.
+2. Nullifies `ip` and `userAgent` on those same entries.
+3. Removes PII fields from `oldData`/`newData` JSON on all matched entries.
+4. Preserves non-PII audit data (action, timestamps, table name).
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `db` | `DrizzleDb` | Database instance with `update` and `select` |
+| `auditTable` | `AuditLog` | The audit log table |
+| `userId` | `string` | User ID to purge |
+| `config` | `PurgeConfig \| undefined` | Field list and replacement value overrides |
+
+---
+
+### `anonymizeJsonData(data, piiFields): Record<string, unknown> | null`
+
+Recursively removes named fields from an object. Processes nested objects and arrays. Returns `null` for null input.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `data` | `Record<string, unknown> \| null` | Data to anonymize |
+| `piiFields` | `string[]` | Field names to remove |
+
+---
+
+### `isUserDataPurged(db, auditTable, userId): Promise<boolean>`
+
+Returns `true` if no audit entries exist with the given `userId`. Useful for idempotency checks before calling `purgeUserData`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `db` | `DrizzleDb` | Database instance |
+| `auditTable` | `AuditLog` | The audit log table |
+| `userId` | `string` | User ID to check |
+
+---
+
+### Type: `WithSoftDelete<T>`
+
+Utility type that augments `T` with full soft-delete fields.
+
+```ts
+type WithSoftDelete<T> = T & {
+  deletedAt: Date | null;
+  deletedBy: string | null;
+};
+```
+
+---
+
+### Type: `WithSoftDeleteTimestamp<T>`
+
+Utility type that augments `T` with only the timestamp field (no `deletedBy`).
+
+```ts
+type WithSoftDeleteTimestamp<T> = T & {
+  deletedAt: Date | null;
+};
+```
+
+---
+
+### Type: `LedgerContext`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `userId` | `string \| null` | Authenticated user ID; `null` for anonymous or system |
+| `ip` | `string \| null` | Client IP |
+| `userAgent` | `string \| null` | `User-Agent` header |
+| `endpoint` | `string \| null` | Request identifier |
+| `requestId` | `string \| undefined` | Trace/correlation ID |
+| `metadata` | `Record<string, unknown> \| undefined` | Arbitrary additional data |
+
+---
+
+### Type: `AuditLogEntry`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | UUIDv7 |
+| `tableName` | `string` | Modified table name |
+| `recordId` | `string` | Primary key of the affected record |
+| `action` | `"INSERT" \| "UPDATE" \| "DELETE" \| "SOFT_DELETE" \| "RESTORE"` | Operation type |
+| `oldData` | `Record<string, unknown> \| null` | Data before the change; `null` for INSERT |
+| `newData` | `Record<string, unknown> \| null` | Data after the change; `null` for DELETE |
+| `userId` | `string \| null` | User who performed the action |
+| `ip` | `string \| null` | Client IP from context |
+| `userAgent` | `string \| null` | User-Agent from context |
+| `endpoint` | `string \| null` | Endpoint from context |
+| `requestId` | `string \| null` | Trace ID from context |
+| `createdAt` | `Date` | When the change occurred |
+
+---
+
+### Type: `PurgeConfig`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `piiFields` | `string[] \| undefined` | `["email", "name", "firstName", "lastName", "phone", "address", "ip", "ipAddress", "userAgent"]` | JSON field names to strip from data columns |
+| `anonymizedUserId` | `string \| undefined` | `"PURGED_USER"` | Replacement value for the `userId` column |
+
+---
+
+### Type: `PurgeResult`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entriesAnonymized` | `number` | Count of rows updated |
+| `tablesProcessed` | `string[]` | Unique table names that had entries anonymized |
+
+---
+
+### Type: `LedgerConfig`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `softDelete` | `boolean \| undefined` | Enable soft-delete functionality |
+| `audit` | `boolean \| undefined` | Enable audit trail logging |
+| `getContext` | `(() => LedgerContext \| null) \| undefined` | Custom context provider |
+| `excludeTables` | `string[] \| undefined` | Tables to skip in audit logging |
+| `logSelects` | `boolean \| undefined` | Audit SELECT queries (default: `false`) |
+
+---
+
+### Type: `SoftDeleteOptions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `columnName` | `string \| undefined` | Override the `deletedAt` column name (default: `"deletedAt"`) |
+| `deletedByColumn` | `string \| undefined` | Column name for the deleting user |
+
+---
+
+### Type: `SoftDeleteResult<T>`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `record` | `T` | The soft-deleted record |
+| `auditEntry` | `AuditLogEntry` | The audit entry created for this operation |
+
+---
+
+### Type: `RestoreResult<T>`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `record` | `T` | The restored record |
+| `auditEntry` | `AuditLogEntry` | The audit entry created for this operation |
+
+---
+
+## Drizzle Adapter (`@rafters/ledger/drizzle`)
+
+### `createAuditedDb<T>(db, config?): T`
+
+Monkeypatches the Drizzle instance so `db.delete(table)` transparently becomes a soft-delete UPDATE for any table that has a `deletedAt` column. Tables without `deletedAt`, or tables listed in `hardDeleteTables`, still execute a real DELETE.
+
+Returns the same database instance with the patched `delete` method.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `db` | `T extends WithDeleteAndUpdate` | Drizzle database instance |
+| `config` | `AuditedDbConfig \| undefined` | Optional configuration |
 
 ---
 
@@ -99,89 +309,6 @@ Returns `1=1` — a SQL fragment that matches all records, deleted or not. Used 
 
 ---
 
-### `softDeleteValues(deletedBy?): { deletedAt: Date; deletedBy: string | null }`
-
-Returns the values object to pass to `.set()` when soft-deleting a record. Sets `deletedAt` to the current time.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `deletedBy` | `string \| null \| undefined` | User ID performing the delete |
-
----
-
-### `restoreValues(): { deletedAt: null; deletedBy: null }`
-
-Returns the values object to pass to `.set()` when restoring a soft-deleted record. Nulls both `deletedAt` and `deletedBy`.
-
----
-
-### `isSoftDeleted(record): boolean`
-
-Returns `true` if the record's `deletedAt` is non-null. Returns `false` for `null` or `undefined` input.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `record` | `{ deletedAt: Date \| null } \| null \| undefined` | Record to check |
-
----
-
-### Type: `WithSoftDelete<T>`
-
-Utility type that augments `T` with full soft-delete fields.
-
-```ts
-type WithSoftDelete<T> = T & {
-  deletedAt: Date | null;
-  deletedBy: string | null;
-};
-```
-
----
-
-### Type: `WithSoftDeleteTimestamp<T>`
-
-Utility type that augments `T` with only the timestamp field (no `deletedBy`).
-
-```ts
-type WithSoftDeleteTimestamp<T> = T & {
-  deletedAt: Date | null;
-};
-```
-
----
-
-## `@rafters/ledger/soft-delete/sqlite`
-## `@rafters/ledger/soft-delete/pg`
-## `@rafters/ledger/soft-delete/mysql`
-
-Dialect-specific column definitions. Spread into your table definition.
-
-| Export | SQLite | Postgres | MySQL |
-|--------|--------|----------|-------|
-| `softDeleteColumns` | `integer("deleted_at", { mode: "timestamp_ms" })` + `text("deleted_by")` | `timestamp("deleted_at", { withTimezone: true })` + `text("deleted_by")` | `timestamp("deleted_at")` + `varchar("deleted_by", { length: 255 })` |
-| `softDeleteTimestamp` | `integer("deleted_at", { mode: "timestamp_ms" })` only | `timestamp("deleted_at", { withTimezone: true })` only | `timestamp("deleted_at")` only |
-
-Both exports are `const` objects. Use `...softDeleteColumns` or `...softDeleteTimestamp` in your column map.
-
----
-
-## `@rafters/ledger/db`
-
----
-
-### `createAuditedDb<T>(db, config?): T`
-
-Monkeypatches the Drizzle instance so `db.delete(table)` transparently becomes a soft-delete UPDATE for any table that has a `deletedAt` column. Tables without `deletedAt`, or tables listed in `hardDeleteTables`, still execute a real DELETE.
-
-Returns the same database instance with the patched `delete` method.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `db` | `T extends WithDeleteAndUpdate` | Drizzle database instance |
-| `config` | `AuditedDbConfig \| undefined` | Optional configuration |
-
----
-
 ### `hasColumn(table, columnName): boolean`
 
 Returns `true` if the Drizzle table object has a column with the given name.
@@ -200,36 +327,6 @@ Extracts the SQL table name from a Drizzle table object. Returns `null` if the i
 | Param | Type | Description |
 |-------|------|-------------|
 | `table` | `unknown` | Drizzle table object |
-
----
-
-### Type: `AuditedDbConfig`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `hardDeleteTables` | `string[] \| undefined` | Table names that skip soft-delete and execute real DELETEs |
-| `softDeleteValuesFactory` | `(deletedBy?: string \| null) => { deletedAt: Date; deletedBy: string \| null } \| undefined` | Custom factory for soft-delete values |
-
----
-
-## `@rafters/ledger/audit`
-
-Manual audit logging functions. These do not auto-capture context from AsyncLocalStorage via the logger; they use it directly. Use these when you need explicit control over what gets logged.
-
----
-
-### `createAuditEntry(options): AuditLogEntry`
-
-Creates an `AuditLogEntry` object without inserting it. Pulls context from AsyncLocalStorage unless `options.context` is provided. Generates a UUIDv7 for the `id` field.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `options.tableName` | `string` | Table that was modified |
-| `options.recordId` | `string` | Primary key of the affected record |
-| `options.action` | `AuditAction` | Operation type |
-| `options.oldData` | `Record<string, unknown> \| null \| undefined` | Data before the change |
-| `options.newData` | `Record<string, unknown> \| null \| undefined` | Data after the change |
-| `options.context` | `LedgerContext \| null \| undefined` | Override context; falls back to AsyncLocalStorage |
 
 ---
 
@@ -331,12 +428,6 @@ Returns all audit entries for a record, ordered newest first. Deserializes `oldD
 
 ---
 
-## `@rafters/ledger/logger`
-
-Drizzle `Logger` interface implementation. Hooks into the Drizzle query lifecycle instead of requiring manual log calls. Fire-and-forget; audit failures are logged to `console.error` but never throw.
-
----
-
 ### `class AuditLogger implements Logger`
 
 Pass an instance to `drizzle(driver, { logger })`. On each write query, parses the SQL, resolves context from AsyncLocalStorage, and calls `writeAuditEntry`.
@@ -381,6 +472,75 @@ Best-effort extraction of a record ID from query parameters. Returns the first s
 
 ---
 
+### Dialect-specific soft-delete columns
+
+`@rafters/ledger/drizzle/soft-delete/sqlite`, `/pg`, `/mysql`
+
+| Export | SQLite | Postgres | MySQL |
+|--------|--------|----------|-------|
+| `softDeleteColumns` | `integer("deleted_at", { mode: "timestamp_ms" })` + `text("deleted_by")` | `timestamp("deleted_at", { withTimezone: true })` + `text("deleted_by")` | `timestamp("deleted_at")` + `varchar("deleted_by", { length: 255 })` |
+| `softDeleteTimestamp` | `integer("deleted_at", { mode: "timestamp_ms" })` only | `timestamp("deleted_at", { withTimezone: true })` only | `timestamp("deleted_at")` only |
+
+Both exports are `const` objects. Use `...softDeleteColumns` or `...softDeleteTimestamp` in your column map.
+
+---
+
+### Dialect-specific audit log schema
+
+`@rafters/ledger/drizzle/schema/sqlite`, `/pg`, `/mysql`
+
+#### `auditLog`
+
+Pre-built table definition named `"audit_log"`. Import directly when the default table name is acceptable.
+
+#### `createAuditLogTable(tableName): SQLiteTable | PgTable | MySQLTable`
+
+Creates an audit log table with a custom name. Identical column structure to `auditLog`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `tableName` | `string` | SQL table name |
+
+#### `AUDIT_LOG_INDEXES`
+
+`readonly string[]` — SQL statements to create recommended indexes on `(table_name, record_id)`, `user_id`, `created_at`, and `request_id`.
+
+SQLite/Postgres use `CREATE INDEX IF NOT EXISTS`. MySQL omits `IF NOT EXISTS`.
+
+#### Column differences by dialect
+
+| Column | SQLite | Postgres | MySQL |
+|--------|--------|----------|-------|
+| `id` | `text` | `text` | `varchar(36)` |
+| `table_name` | `text` | `text` | `varchar(255)` |
+| `record_id` | `text` | `text` | `varchar(255)` |
+| `action` | `text` enum | `text` enum | `varchar(20)` |
+| `old_data` / `new_data` | `text` | `text` | `text` |
+| `user_id` | `text` | `text` | `varchar(255)` |
+| `ip` | `text` | `text` | `varchar(45)` |
+| `endpoint` | `text` | `text` | `varchar(500)` |
+| `request_id` | `text` | `text` | `varchar(255)` |
+| `created_at` | `integer timestamp_ms`, default `unixepoch() * 1000` | `timestamptz`, default `now()` | `timestamp`, default `now()` |
+
+#### Types: `AuditLog`, `AuditLogInsert`, `AuditLogSelect`
+
+| Type | Description |
+|------|-------------|
+| `AuditLog` | `typeof auditLog` — the table type itself |
+| `AuditLogInsert` | `typeof auditLog.$inferInsert` — insert shape |
+| `AuditLogSelect` | `typeof auditLog.$inferSelect` — select shape |
+
+---
+
+### Type: `AuditedDbConfig`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hardDeleteTables` | `string[] \| undefined` | Table names that skip soft-delete and execute real DELETEs |
+| `softDeleteValuesFactory` | `(deletedBy?: string \| null) => { deletedAt: Date; deletedBy: string \| null } \| undefined` | Custom factory for soft-delete values |
+
+---
+
 ### Type: `AuditLoggerConfig`
 
 | Field | Type | Description |
@@ -419,131 +579,7 @@ Shape of the object passed to `writeAuditEntry` in `AuditLogger`.
 
 ---
 
-## `@rafters/ledger/schema/sqlite`
-## `@rafters/ledger/schema/pg`
-## `@rafters/ledger/schema/mysql`
-
-Drizzle table definitions for the audit log. Use one dialect; do not mix.
-
----
-
-### `auditLog`
-
-Pre-built table definition named `"audit_log"`. Import directly when the default table name is acceptable.
-
----
-
-### `createAuditLogTable(tableName): SQLiteTable | PgTable | MySQLTable`
-
-Creates an audit log table with a custom name. Identical column structure to `auditLog`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `tableName` | `string` | SQL table name |
-
----
-
-### `AUDIT_LOG_INDEXES`
-
-`readonly string[]` — SQL statements to create recommended indexes on `(table_name, record_id)`, `user_id`, `created_at`, and `request_id`.
-
-SQLite/Postgres use `CREATE INDEX IF NOT EXISTS`. MySQL omits `IF NOT EXISTS`.
-
----
-
-### Column differences by dialect
-
-| Column | SQLite | Postgres | MySQL |
-|--------|--------|----------|-------|
-| `id` | `text` | `text` | `varchar(36)` |
-| `table_name` | `text` | `text` | `varchar(255)` |
-| `record_id` | `text` | `text` | `varchar(255)` |
-| `action` | `text` enum | `text` enum | `varchar(20)` |
-| `old_data` / `new_data` | `text` | `text` | `text` |
-| `user_id` | `text` | `text` | `varchar(255)` |
-| `ip` | `text` | `text` | `varchar(45)` |
-| `endpoint` | `text` | `text` | `varchar(500)` |
-| `request_id` | `text` | `text` | `varchar(255)` |
-| `created_at` | `integer timestamp_ms`, default `unixepoch() * 1000` | `timestamptz`, default `now()` | `timestamp`, default `now()` |
-
----
-
-### Types: `AuditLog`, `AuditLogInsert`, `AuditLogSelect`
-
-| Type | Description |
-|------|-------------|
-| `AuditLog` | `typeof auditLog` — the table type itself |
-| `AuditLogInsert` | `typeof auditLog.$inferInsert` — insert shape |
-| `AuditLogSelect` | `typeof auditLog.$inferSelect` — select shape |
-
----
-
-## `@rafters/ledger/gdpr`
-
-GDPR-compliant data purge. Preserves the audit trail structure while removing PII. Records are never deleted.
-
----
-
-### `purgeUserData(db, auditTable, userId, config?): Promise<PurgeResult>`
-
-Finds all audit entries where `userId` matches (actor) or `recordId` matches (subject), then:
-
-1. Replaces `userId` with `anonymizedUserId` on entries the user created.
-2. Nullifies `ip` and `userAgent` on those same entries.
-3. Removes PII fields from `oldData`/`newData` JSON on all matched entries.
-4. Preserves non-PII audit data (action, timestamps, table name).
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `db` | `DrizzleDb` | Database instance with `update` and `select` |
-| `auditTable` | `AuditLog` | The audit log table |
-| `userId` | `string` | User ID to purge |
-| `config` | `PurgeConfig \| undefined` | Field list and replacement value overrides |
-
----
-
-### `anonymizeJsonData(data, piiFields): Record<string, unknown> | null`
-
-Recursively removes named fields from an object. Processes nested objects and arrays. Returns `null` for null input.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `data` | `Record<string, unknown> \| null` | Data to anonymize |
-| `piiFields` | `string[]` | Field names to remove |
-
----
-
-### `isUserDataPurged(db, auditTable, userId): Promise<boolean>`
-
-Returns `true` if no audit entries exist with the given `userId`. Useful for idempotency checks before calling `purgeUserData`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `db` | `DrizzleDb` | Database instance |
-| `auditTable` | `AuditLog` | The audit log table |
-| `userId` | `string` | User ID to check |
-
----
-
-### Type: `PurgeConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `piiFields` | `string[] \| undefined` | `["email", "name", "firstName", "lastName", "phone", "address", "ip", "ipAddress", "userAgent"]` | JSON field names to strip from data columns |
-| `anonymizedUserId` | `string \| undefined` | `"PURGED_USER"` | Replacement value for the `userId` column |
-
----
-
-### Type: `PurgeResult`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `entriesAnonymized` | `number` | Count of rows updated |
-| `tablesProcessed` | `string[]` | Unique table names that had entries anonymized |
-
----
-
-## `@rafters/ledger/better-auth`
+## Better Auth (`@rafters/ledger/better-auth`)
 
 Integration with [better-auth](https://www.better-auth.com/). The plugin provides audit logging via `databaseHooks`. Soft-delete behavior requires `createSoftDeleteCallback` wired separately into `user.deleteUser.beforeDelete`.
 
@@ -635,80 +671,3 @@ Thrown by `createSoftDeleteCallback` to interrupt the hard delete after a succes
 | `userTable` | `{ id: Column; deletedAt: Column; deletedBy?: Column }` | User table with soft-delete columns |
 | `whereUserId` | `(userId: string) => SQL` | WHERE clause builder |
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void> \| undefined` | Optional audit callback |
-
----
-
-## Types (`@rafters/ledger`)
-
-Root types exported from `@rafters/ledger` (also re-exported from subpaths where used).
-
----
-
-### `LedgerContext`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `userId` | `string \| null` | Authenticated user ID; `null` for anonymous or system |
-| `ip` | `string \| null` | Client IP |
-| `userAgent` | `string \| null` | `User-Agent` header |
-| `endpoint` | `string \| null` | Request identifier |
-| `requestId` | `string \| undefined` | Trace/correlation ID |
-| `metadata` | `Record<string, unknown> \| undefined` | Arbitrary additional data |
-
----
-
-### `AuditLogEntry`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | UUIDv7 |
-| `tableName` | `string` | Modified table name |
-| `recordId` | `string` | Primary key of the affected record |
-| `action` | `"INSERT" \| "UPDATE" \| "DELETE" \| "SOFT_DELETE" \| "RESTORE"` | Operation type |
-| `oldData` | `Record<string, unknown> \| null` | Data before the change; `null` for INSERT |
-| `newData` | `Record<string, unknown> \| null` | Data after the change; `null` for DELETE |
-| `userId` | `string \| null` | User who performed the action |
-| `ip` | `string \| null` | Client IP from context |
-| `userAgent` | `string \| null` | User-Agent from context |
-| `endpoint` | `string \| null` | Endpoint from context |
-| `requestId` | `string \| null` | Trace ID from context |
-| `createdAt` | `Date` | When the change occurred |
-
----
-
-### `LedgerConfig`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `softDelete` | `boolean \| undefined` | Enable soft-delete functionality |
-| `audit` | `boolean \| undefined` | Enable audit trail logging |
-| `getContext` | `(() => LedgerContext \| null) \| undefined` | Custom context provider |
-| `excludeTables` | `string[] \| undefined` | Tables to skip in audit logging |
-| `logSelects` | `boolean \| undefined` | Audit SELECT queries (default: `false`) |
-
----
-
-### `SoftDeleteOptions`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `columnName` | `string \| undefined` | Override the `deletedAt` column name (default: `"deletedAt"`) |
-| `deletedByColumn` | `string \| undefined` | Column name for the deleting user |
-
----
-
-### `SoftDeleteResult<T>`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `record` | `T` | The soft-deleted record |
-| `auditEntry` | `AuditLogEntry` | The audit entry created for this operation |
-
----
-
-### `RestoreResult<T>`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `record` | `T` | The restored record |
-| `auditEntry` | `AuditLogEntry` | The audit entry created for this operation |

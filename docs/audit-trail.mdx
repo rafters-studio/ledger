@@ -2,7 +2,7 @@
 
 `@rafters/ledger` records every INSERT, UPDATE, DELETE, SOFT_DELETE, and RESTORE against a structured audit log table. Every entry captures who did it, from where, and what changed.
 
-Two approaches exist. `AuditLogger` hooks into Drizzle's logger interface and captures mutations automatically. The manual functions from `@rafters/ledger/audit` let you record exactly the data you want, with full before/after snapshots. Both read request context from `AsyncLocalStorage` so you never thread `userId` and `ip` through your call stack by hand.
+Two approaches exist. `AuditLogger` hooks into Drizzle's logger interface and captures mutations automatically. The manual functions from `@rafters/ledger/drizzle` let you record exactly the data you want, with full before/after snapshots. Both read request context from `AsyncLocalStorage` so you never thread `userId` and `ip` through your call stack by hand.
 
 ---
 
@@ -12,9 +12,9 @@ Add the audit log table to your Drizzle schema file. Import from the dialect-spe
 
 ```typescript
 // schema.ts
-export { auditLog } from "@rafters/ledger/schema/sqlite";
-// or: "@rafters/ledger/schema/pg"
-// or: "@rafters/ledger/schema/mysql"
+export { auditLog } from "@rafters/ledger/drizzle/schema/sqlite";
+// or: "@rafters/ledger/drizzle/schema/pg"
+// or: "@rafters/ledger/drizzle/schema/mysql"
 ```
 
 The `auditLog` table has the following columns:
@@ -39,7 +39,7 @@ The `auditLog` table has the following columns:
 If `audit_log` conflicts with an existing table, pass a name to `createAuditLogTable`:
 
 ```typescript
-import { createAuditLogTable } from "@rafters/ledger/schema/sqlite";
+import { createAuditLogTable } from "@rafters/ledger/drizzle/schema/sqlite";
 
 export const auditLog = createAuditLogTable("platform_audit_log");
 ```
@@ -49,7 +49,7 @@ export const auditLog = createAuditLogTable("platform_audit_log");
 `AUDIT_LOG_INDEXES` exports four index statements. Run them once in your migration after creating the table.
 
 ```typescript
-import { AUDIT_LOG_INDEXES } from "@rafters/ledger/schema/sqlite";
+import { AUDIT_LOG_INDEXES } from "@rafters/ledger/drizzle/schema/sqlite";
 // AUDIT_LOG_INDEXES is a readonly tuple of four SQL strings:
 // idx_audit_log_table_record  ON audit_log(table_name, record_id)
 // idx_audit_log_user          ON audit_log(user_id)
@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_request      ON audit_log(request_id);
 ```typescript
 import { drizzle } from "drizzle-orm/d1";
 import { uuidv7 } from "uuidv7";
-import { AuditLogger } from "@rafters/ledger/logger";
+import { AuditLogger } from "@rafters/ledger/drizzle";
 import { auditLog } from "./schema.js";
 
 // Create the logger first, pointing at a secondary db instance
@@ -167,7 +167,7 @@ Because `AuditLogger` receives only the SQL and its params, it has no access to 
 Both automatic and manual logging read from `AsyncLocalStorage`. Wire the context in Hono middleware once and every handler downstream picks it up automatically.
 
 ```typescript
-import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger/context";
+import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger";
 
 app.use(async (c, next) => {
   const context = createLedgerContext({
@@ -184,7 +184,7 @@ app.use(async (c, next) => {
 For background workers and cron jobs where there is no HTTP request, use `createSystemContext`:
 
 ```typescript
-import { runWithLedgerContext, createSystemContext } from "@rafters/ledger/context";
+import { runWithLedgerContext, createSystemContext } from "@rafters/ledger";
 
 await runWithLedgerContext(
   createSystemContext("cron:expired-sessions-cleanup"),
@@ -198,7 +198,7 @@ await runWithLedgerContext(
 
 ## 3. Manual Logging Functions
 
-Import from `@rafters/ledger/audit`. Each function creates an `AuditLogEntry`, serializes `oldData` and `newData` to JSON, and inserts the row. All context fields are read from `AsyncLocalStorage` at call time.
+Import from `@rafters/ledger/drizzle`. Each function creates an `AuditLogEntry`, serializes `oldData` and `newData` to JSON, and inserts the row. All context fields are read from `AsyncLocalStorage` at call time.
 
 ```typescript
 import {
@@ -207,8 +207,14 @@ import {
   logDelete,
   logSoftDelete,
   logRestore,
-} from "@rafters/ledger/audit";
+} from "@rafters/ledger/drizzle";
 import { auditLog } from "./schema.js";
+```
+
+For constructing an audit entry without inserting it, `createAuditEntry` is available from `@rafters/ledger`:
+
+```typescript
+import { createAuditEntry } from "@rafters/ledger";
 ```
 
 ### logInsert
@@ -261,6 +267,8 @@ await logSoftDelete(db, auditLog, tableName, recordId, oldData, newData);
 Records both states: `oldData` has `deletedAt: null`, `newData` has `deletedAt` set.
 
 ```typescript
+import { softDeleteValues } from "@rafters/ledger";
+
 const [oldUser] = await db.select().from(users).where(eq(users.id, id));
 const [newUser] = await db
   .update(users)
@@ -279,6 +287,8 @@ await logRestore(db, auditLog, tableName, recordId, oldData, newData);
 The inverse of `logSoftDelete`: `oldData` has `deletedAt` set, `newData` has it null.
 
 ```typescript
+import { restoreValues } from "@rafters/ledger";
+
 const [oldUser] = await db.select().from(users).where(eq(users.id, id));
 const [newUser] = await db
   .update(users)
@@ -297,7 +307,7 @@ The return value is the inserted entry with its generated `id` and `createdAt`. 
 ## 4. Querying History
 
 ```typescript
-import { getRecordHistory } from "@rafters/ledger/audit";
+import { getRecordHistory } from "@rafters/ledger/drizzle";
 
 const history = await getRecordHistory(db, auditLog, "users", userId);
 ```
