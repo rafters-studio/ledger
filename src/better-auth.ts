@@ -9,7 +9,7 @@
  * @example
  * ```typescript
  * import { betterAuth } from 'better-auth';
- * import { ledgerPlugin, createSoftDeleteCallback } from '@ezmode-games/drizzle-ledger/better-auth-plugin';
+ * import { ledgerPlugin, createSoftDeleteCallback } from '@rafters/ledger/better-auth-plugin';
  * import { eq } from 'drizzle-orm';
  *
  * export const auth = betterAuth({
@@ -84,7 +84,7 @@ export interface LedgerPluginConfig {
 // Helper to safely log errors without blocking auth operations
 function safeLog(message: string, error?: unknown): void {
   // eslint-disable-next-line no-console
-  console.error(`[drizzle-ledger] ${message}`, error ?? "");
+  console.error(`[ledger] ${message}`, error ?? "");
 }
 
 // Type for better-auth user with id
@@ -106,7 +106,7 @@ type UserWithId = { id: string } & Record<string, unknown>;
  *
  * @example
  * ```typescript
- * import { ledgerPlugin } from '@ezmode-games/drizzle-ledger/better-auth-plugin';
+ * import { ledgerPlugin } from '@rafters/ledger/better-auth-plugin';
  *
  * export const auth = betterAuth({
  *   plugins: [
@@ -195,7 +195,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     : undefined;
 
   return {
-    id: "drizzle-ledger",
+    id: "ledger",
     init: () => {
       return {
         options: {
@@ -256,7 +256,7 @@ export interface SoftDeleteCallbackOptions {
  *
  * @example
  * ```typescript
- * import { createSoftDeleteCallback } from '@ezmode-games/drizzle-ledger/better-auth-plugin';
+ * import { createSoftDeleteCallback } from '@rafters/ledger/better-auth-plugin';
  * import { eq } from 'drizzle-orm';
  *
  * export const auth = betterAuth({
@@ -327,7 +327,7 @@ export function createSoftDeleteCallback(
  *
  * @example
  * ```typescript
- * import { createDeleteAuditCallback } from '@ezmode-games/drizzle-ledger/better-auth-plugin';
+ * import { createDeleteAuditCallback } from '@rafters/ledger/better-auth-plugin';
  *
  * export const auth = betterAuth({
  *   user: {

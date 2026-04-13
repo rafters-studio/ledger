@@ -242,7 +242,7 @@ describe("AuditLogger", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(consoleSpy).toHaveBeenCalledWith(
-      "[drizzle-ledger] Failed to write audit entry:",
+      "[ledger] Failed to write audit entry:",
       expect.any(Error),
     );
 

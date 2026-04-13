@@ -1,0 +1,331 @@
+# Audit Trail
+
+`@rafters/ledger` records every INSERT, UPDATE, DELETE, SOFT_DELETE, and RESTORE against a structured audit log table. Every entry captures who did it, from where, and what changed.
+
+Two approaches exist. `AuditLogger` hooks into Drizzle's logger interface and captures mutations automatically. The manual functions from `@rafters/ledger/audit` let you record exactly the data you want, with full before/after snapshots. Both read request context from `AsyncLocalStorage` so you never thread `userId` and `ip` through your call stack by hand.
+
+---
+
+## 1. Audit Log Schema
+
+Add the audit log table to your Drizzle schema file. Import from the dialect-specific path.
+
+```typescript
+// schema.ts
+export { auditLog } from "@rafters/ledger/schema/sqlite";
+// or: "@rafters/ledger/schema/pg"
+// or: "@rafters/ledger/schema/mysql"
+```
+
+The `auditLog` table has the following columns:
+
+| Column       | Type      | Notes                                                |
+| ------------ | --------- | ---------------------------------------------------- |
+| `id`         | text (PK) | UUIDv7                                               |
+| `tableName`  | text      | The modified table                                   |
+| `recordId`   | text      | Primary key of the affected row                      |
+| `action`     | text enum | `INSERT`, `UPDATE`, `DELETE`, `SOFT_DELETE`, `RESTORE` |
+| `oldData`    | text      | JSON-serialized state before the change; null on INSERT |
+| `newData`    | text      | JSON-serialized state after the change; null on DELETE  |
+| `userId`     | text      | From ledger context; null for system/anonymous       |
+| `ip`         | text      | From ledger context                                  |
+| `userAgent`  | text      | From ledger context                                  |
+| `endpoint`   | text      | From ledger context (e.g., `POST /users`)            |
+| `requestId`  | text      | From ledger context; useful for trace correlation    |
+| `createdAt`  | timestamp | Set at insert time                                   |
+
+### Custom table name
+
+If `audit_log` conflicts with an existing table, pass a name to `createAuditLogTable`:
+
+```typescript
+import { createAuditLogTable } from "@rafters/ledger/schema/sqlite";
+
+export const auditLog = createAuditLogTable("platform_audit_log");
+```
+
+### Indexes
+
+`AUDIT_LOG_INDEXES` exports four index statements. Run them once in your migration after creating the table.
+
+```typescript
+import { AUDIT_LOG_INDEXES } from "@rafters/ledger/schema/sqlite";
+// AUDIT_LOG_INDEXES is a readonly tuple of four SQL strings:
+// idx_audit_log_table_record  ON audit_log(table_name, record_id)
+// idx_audit_log_user          ON audit_log(user_id)
+// idx_audit_log_created       ON audit_log(created_at)
+// idx_audit_log_request       ON audit_log(request_id)
+```
+
+### Migration SQL (SQLite / D1)
+
+```sql
+CREATE TABLE audit_log (
+  id          TEXT PRIMARY KEY,
+  table_name  TEXT NOT NULL,
+  record_id   TEXT NOT NULL,
+  action      TEXT NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE','SOFT_DELETE','RESTORE')),
+  old_data    TEXT,
+  new_data    TEXT,
+  user_id     TEXT,
+  ip          TEXT,
+  user_agent  TEXT,
+  endpoint    TEXT,
+  request_id  TEXT,
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_table_record ON audit_log(table_name, record_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user         ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created      ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_request      ON audit_log(request_id);
+```
+
+---
+
+## 2. Automatic Logging with AuditLogger
+
+`AuditLogger` implements Drizzle's `Logger` interface. Pass it to `drizzle()` and every mutation query fires your `writeAuditEntry` callback.
+
+```typescript
+import { drizzle } from "drizzle-orm/d1";
+import { uuidv7 } from "uuidv7";
+import { AuditLogger } from "@rafters/ledger/logger";
+import { auditLog } from "./schema.js";
+
+// Create the logger first, pointing at a secondary db instance
+// (or a queue, or any async sink)
+const auditLogger = new AuditLogger(
+  async (entry) => {
+    await baseDb
+      .insert(auditLog)
+      .values({
+        id: uuidv7(),
+        tableName: entry.tableName,
+        recordId: entry.recordId ?? "unknown",
+        action: entry.action,
+        oldData: null,     // AuditLogger does not capture snapshots
+        newData: null,
+        userId: entry.userId,
+        ip: entry.ip,
+        userAgent: entry.userAgent,
+        endpoint: entry.endpoint,
+        requestId: entry.requestId ?? null,
+        createdAt: new Date(),
+      })
+      .execute();
+  },
+  {
+    excludeTables: ["audit_log", "session", "verification"],
+    logSelects: false,
+  },
+);
+
+export const db = drizzle(env.DB, { logger: auditLogger });
+```
+
+### Constructor
+
+```typescript
+new AuditLogger(
+  writeAuditEntry: (entry: AuditEntryInput) => Promise<void>,
+  config?: AuditLoggerConfig
+)
+```
+
+### AuditEntryInput
+
+| Field       | Type                                        |
+| ----------- | ------------------------------------------- |
+| `tableName` | string                                      |
+| `recordId`  | string or null (best-effort extraction)     |
+| `action`    | `INSERT`, `UPDATE`, `DELETE`, or `SELECT`   |
+| `query`     | string (raw SQL)                            |
+| `params`    | unknown[]                                   |
+| `userId`    | string or null                              |
+| `ip`        | string or null                              |
+| `userAgent` | string or null                              |
+| `endpoint`  | string or null                              |
+| `requestId` | string or undefined                         |
+
+### AuditLoggerConfig
+
+| Option          | Type       | Default | Effect                                                  |
+| --------------- | ---------- | ------- | ------------------------------------------------------- |
+| `includeTables` | string[]   | all     | Audit only these tables; empty means audit everything   |
+| `excludeTables` | string[]   | none    | Never audit these tables                                |
+| `logSelects`    | boolean    | false   | Include SELECT queries in the audit log                 |
+
+### How it works
+
+`logQuery` fires synchronously after Drizzle executes each statement. The method calls `parseQuery` to extract the action and table from the SQL string, then calls `extractRecordId` to pull the first param value that matches a UUID or slug pattern. The `writeAuditEntry` callback runs fire-and-forget: errors are logged to `console.error` and never thrown, so a failing audit sink never blocks a mutation.
+
+Because `AuditLogger` receives only the SQL and its params, it has no access to the row state before or after the change. `recordId` is best-effort. For exact before/after snapshots, use the manual functions.
+
+### Context setup
+
+Both automatic and manual logging read from `AsyncLocalStorage`. Wire the context in Hono middleware once and every handler downstream picks it up automatically.
+
+```typescript
+import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger/context";
+
+app.use(async (c, next) => {
+  const context = createLedgerContext({
+    userId: c.get("user")?.id ?? null,
+    ip: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    userAgent: c.req.header("user-agent") ?? null,
+    endpoint: `${c.req.method} ${c.req.path}`,
+    requestId: c.get("requestId"),
+  });
+  return runWithLedgerContext(context, next);
+});
+```
+
+For background workers and cron jobs where there is no HTTP request, use `createSystemContext`:
+
+```typescript
+import { runWithLedgerContext, createSystemContext } from "@rafters/ledger/context";
+
+await runWithLedgerContext(
+  createSystemContext("cron:expired-sessions-cleanup"),
+  async () => {
+    await cleanupExpiredSessions();
+  },
+);
+```
+
+---
+
+## 3. Manual Logging Functions
+
+Import from `@rafters/ledger/audit`. Each function creates an `AuditLogEntry`, serializes `oldData` and `newData` to JSON, and inserts the row. All context fields are read from `AsyncLocalStorage` at call time.
+
+```typescript
+import {
+  logInsert,
+  logUpdate,
+  logDelete,
+  logSoftDelete,
+  logRestore,
+} from "@rafters/ledger/audit";
+import { auditLog } from "./schema.js";
+```
+
+### logInsert
+
+```typescript
+await logInsert(db, auditLog, tableName, recordId, newData);
+```
+
+Call after inserting a record. `oldData` is always null for INSERT.
+
+```typescript
+const [user] = await db.insert(users).values(payload).returning();
+await logInsert(db, auditLog, "users", user.id, user);
+```
+
+### logUpdate
+
+```typescript
+await logUpdate(db, auditLog, tableName, recordId, oldData, newData);
+```
+
+Fetch `oldData` before the update so the full diff is captured.
+
+```typescript
+const [oldUser] = await db.select().from(users).where(eq(users.id, id));
+const [newUser] = await db.update(users).set(changes).where(eq(users.id, id)).returning();
+await logUpdate(db, auditLog, "users", id, oldUser, newUser);
+```
+
+### logDelete
+
+```typescript
+await logDelete(db, auditLog, tableName, recordId, oldData);
+```
+
+Fetch `oldData` before deleting. `newData` is always null for DELETE.
+
+```typescript
+const [user] = await db.select().from(users).where(eq(users.id, id));
+await db.delete(users).where(eq(users.id, id));
+await logDelete(db, auditLog, "users", id, user);
+```
+
+### logSoftDelete
+
+```typescript
+await logSoftDelete(db, auditLog, tableName, recordId, oldData, newData);
+```
+
+Records both states: `oldData` has `deletedAt: null`, `newData` has `deletedAt` set.
+
+```typescript
+const [oldUser] = await db.select().from(users).where(eq(users.id, id));
+const [newUser] = await db
+  .update(users)
+  .set(softDeleteValues(currentUserId))
+  .where(eq(users.id, id))
+  .returning();
+await logSoftDelete(db, auditLog, "users", id, oldUser, newUser);
+```
+
+### logRestore
+
+```typescript
+await logRestore(db, auditLog, tableName, recordId, oldData, newData);
+```
+
+The inverse of `logSoftDelete`: `oldData` has `deletedAt` set, `newData` has it null.
+
+```typescript
+const [oldUser] = await db.select().from(users).where(eq(users.id, id));
+const [newUser] = await db
+  .update(users)
+  .set(restoreValues())
+  .where(eq(users.id, id))
+  .returning();
+await logRestore(db, auditLog, "users", id, oldUser, newUser);
+```
+
+### All five functions return `AuditLogEntry`
+
+The return value is the inserted entry with its generated `id` and `createdAt`. Use it if you need the audit entry ID for a response or further logging.
+
+---
+
+## 4. Querying History
+
+```typescript
+import { getRecordHistory } from "@rafters/ledger/audit";
+
+const history = await getRecordHistory(db, auditLog, "users", userId);
+```
+
+Returns `AuditLogEntry[]` sorted newest-first. The `oldData` and `newData` fields are parsed from JSON back into objects.
+
+```typescript
+for (const entry of history) {
+  console.log(`${entry.action} by ${entry.userId ?? "system"} at ${entry.createdAt.toISOString()}`);
+  if (entry.action === "UPDATE") {
+    console.log("before:", entry.oldData);
+    console.log("after:", entry.newData);
+  }
+}
+```
+
+---
+
+## 5. Automatic vs Manual
+
+| Concern                     | Automatic (AuditLogger)              | Manual (audit functions)             |
+| --------------------------- | ------------------------------------ | ------------------------------------ |
+| Setup cost                  | One-time logger configuration        | One call per mutation                |
+| Coverage                    | All queries automatically            | Only what you explicitly log         |
+| Before/after snapshots      | Not available                        | Full object capture                  |
+| Record ID accuracy          | Best-effort from query params        | Exact                                |
+| Action granularity          | INSERT, UPDATE, DELETE, SELECT       | INSERT, UPDATE, DELETE, SOFT_DELETE, RESTORE |
+| Audit sink failure behavior | Fire-and-forget; never blocks query  | Awaited; caller handles errors       |
+| Suited for                  | Compliance coverage with minimal code | Security-sensitive mutations, GDPR exports |
+
+In practice, both approaches compose. Use `AuditLogger` as a safety net that catches everything, and add manual `logUpdate` / `logDelete` calls around the mutations where you need the full diff.

@@ -1,0 +1,239 @@
+# GDPR: Article 17 Erasure
+
+GDPR Article 17 requires that you delete a user's personal data on request. Audit trails require that you keep a record of every change ever made. These two requirements are in direct conflict.
+
+The standard resolutions are wrong. Deleting audit entries eliminates the compliance trail you need to prove the system behaved correctly. Keeping audit entries unchanged with full PII violates the erasure request. Ledger's answer is anonymization: the trail structure stays intact, the identity dissolves. Every row that references the user still exists. None of them identify the user.
+
+---
+
+## How It Works
+
+`purgeUserData` processes the audit log in a single pass:
+
+1. Selects all entries where `userId` matches the target user OR `recordId` matches the target user. This covers both sides: actions the user performed and actions performed on the user's record.
+2. Parses `oldData` and `newData` as JSON.
+3. Recursively removes PII fields from both JSON objects.
+4. For entries where `userId` matches the target user, replaces `userId` with `"PURGED_USER"` and sets `ip` and `userAgent` to null.
+5. For entries where only `recordId` matches (a different user modified this record), the `userId`, `ip`, and `userAgent` of the acting user are untouched.
+6. Writes the anonymized data back to each row.
+
+The audit trail remains queryable. `tableName`, `action`, `recordId`, `endpoint`, `requestId`, and `createdAt` are all preserved. You can still reconstruct what happened; you just cannot reconstruct who did it.
+
+---
+
+## Basic Usage
+
+```typescript
+import { purgeUserData } from '@rafters/ledger/gdpr';
+import { auditLog } from '@rafters/ledger/schema/sqlite';
+
+const result = await purgeUserData(db, auditLog, userId, {
+  piiFields: ['email', 'name', 'phone', 'address', 'ip', 'userAgent'],
+});
+
+// { entriesAnonymized: 12, tablesProcessed: ['users', 'orders'] }
+```
+
+`purgeUserData` returns a `PurgeResult`:
+
+| Field               | Type       | Description                                          |
+| ------------------- | ---------- | ---------------------------------------------------- |
+| `entriesAnonymized` | `number`   | Count of audit rows updated                          |
+| `tablesProcessed`   | `string[]` | Distinct `tableName` values found across all entries |
+
+---
+
+## Admin Preservation
+
+When admin-456 modifies user-123's record, that audit entry has `userId: "admin-456"` and `recordId: "user-123"`. If user-123 requests erasure, `purgeUserData` finds this entry because `recordId` matches. It strips PII fields from `oldData` and `newData`. It does not touch `userId`, `ip`, or `userAgent` because those belong to admin-456, not to the user being purged.
+
+**Before erasure:**
+
+```json
+{
+  "id": "01jz1a2b3c4d5e6f7g8h9i0j",
+  "tableName": "users",
+  "recordId": "user-123",
+  "action": "UPDATE",
+  "userId": "admin-456",
+  "ip": "10.0.0.1",
+  "userAgent": "Mozilla/5.0 ...",
+  "oldData": "{\"id\":\"user-123\",\"email\":\"alice@example.com\",\"name\":\"Alice\",\"role\":\"member\"}",
+  "newData": "{\"id\":\"user-123\",\"email\":\"alice@example.com\",\"name\":\"Alice\",\"role\":\"admin\"}"
+}
+```
+
+**After `purgeUserData(db, auditLog, "user-123", ...)`:**
+
+```json
+{
+  "id": "01jz1a2b3c4d5e6f7g8h9i0j",
+  "tableName": "users",
+  "recordId": "user-123",
+  "action": "UPDATE",
+  "userId": "admin-456",
+  "ip": "10.0.0.1",
+  "userAgent": "Mozilla/5.0 ...",
+  "oldData": "{\"id\":\"user-123\",\"role\":\"member\"}",
+  "newData": "{\"id\":\"user-123\",\"role\":\"admin\"}"
+}
+```
+
+`email` and `name` are gone. admin-456's identity is intact. The change record is still auditable.
+
+**Before erasure (entry created by user-123):**
+
+```json
+{
+  "id": "01jz1a2b3c4d5e6f7g8h9i0k",
+  "tableName": "orders",
+  "recordId": "order-789",
+  "action": "INSERT",
+  "userId": "user-123",
+  "ip": "203.0.113.42",
+  "userAgent": "Mozilla/5.0 ...",
+  "oldData": null,
+  "newData": "{\"id\":\"order-789\",\"userId\":\"user-123\",\"email\":\"alice@example.com\",\"total\":49.99}"
+}
+```
+
+**After erasure:**
+
+```json
+{
+  "id": "01jz1a2b3c4d5e6f7g8h9i0k",
+  "tableName": "orders",
+  "recordId": "order-789",
+  "action": "INSERT",
+  "userId": "PURGED_USER",
+  "ip": null,
+  "userAgent": null,
+  "oldData": null,
+  "newData": "{\"id\":\"order-789\",\"total\":49.99}"
+}
+```
+
+`userId`, `ip`, `userAgent`, and `email` are cleared. The order record and the action type are preserved.
+
+---
+
+## PII Fields
+
+The default field list covers the most common cases:
+
+```
+email, name, firstName, lastName, phone, address, ip, ipAddress, userAgent
+```
+
+Pass `piiFields` to override for your data model. The list replaces the default; it does not extend it.
+
+```typescript
+const result = await purgeUserData(db, auditLog, userId, {
+  piiFields: [
+    'email',
+    'name',
+    'phone',
+    'address',
+    'ip',
+    'userAgent',
+    'taxId',
+    'dateOfBirth',
+    'billingAddress',
+  ],
+});
+```
+
+Field matching is by exact key name. Nested objects are processed recursively, so `{ "contact": { "email": "..." } }` is handled correctly without listing `contact.email` separately.
+
+If you need the stripping function standalone (for anonymizing data outside the audit log, for example), `anonymizeJsonData` is exported directly:
+
+```typescript
+import { anonymizeJsonData } from '@rafters/ledger/gdpr';
+
+const raw = { id: 'rec-123', email: 'alice@example.com', name: 'Alice', role: 'admin' };
+const clean = anonymizeJsonData(raw, ['email', 'name']);
+// { id: 'rec-123', role: 'admin' }
+```
+
+`anonymizeJsonData` returns null if given null. It handles nested objects and arrays of objects without additional configuration.
+
+---
+
+## Idempotency
+
+`purgeUserData` is safe to call multiple times. After the first call, no entries with `userId` matching the target exist. Subsequent calls find zero matching rows and return `{ entriesAnonymized: 0, tablesProcessed: [] }`.
+
+If your erasure workflow runs in a queue or retry loop, check before acting to avoid unnecessary work:
+
+```typescript
+import { isUserDataPurged, purgeUserData } from '@rafters/ledger/gdpr';
+import { auditLog } from '@rafters/ledger/schema/sqlite';
+
+async function handleErasureRequest(db: DrizzleDb, userId: string) {
+  const alreadyPurged = await isUserDataPurged(db, auditLog, userId);
+
+  if (alreadyPurged) {
+    return { skipped: true };
+  }
+
+  const result = await purgeUserData(db, auditLog, userId, {
+    piiFields: ['email', 'name', 'phone', 'address', 'ip', 'userAgent'],
+  });
+
+  return { skipped: false, ...result };
+}
+```
+
+`isUserDataPurged` checks whether any entries still exist with `userId` matching the target. It returns `true` when none are found. Note that this checks `userId` only, not `recordId`: entries where another user acted on the target user's record are expected to remain and do not affect this result.
+
+---
+
+## Custom Anonymized User ID
+
+The default replacement for `userId` is `"PURGED_USER"`. If your system needs a different sentinel value (for example, to satisfy a downstream invariant or to distinguish between system-level purges and self-requested deletions), set `anonymizedUserId` in the config:
+
+```typescript
+const result = await purgeUserData(db, auditLog, userId, {
+  anonymizedUserId: 'GDPR_ERASED',
+  piiFields: ['email', 'name', 'phone', 'address', 'ip', 'userAgent'],
+});
+```
+
+The replacement is written verbatim to the `userId` column for every entry where the acting user matches the purge target.
+
+---
+
+## API Reference
+
+### `purgeUserData(db, auditTable, userId, config?)`
+
+Anonymizes all audit log entries for a user. Returns a `PurgeResult`.
+
+| Parameter     | Type           | Description                              |
+| ------------- | -------------- | ---------------------------------------- |
+| `db`          | `DrizzleDb`    | Drizzle database instance                |
+| `auditTable`  | `AuditLog`     | The audit log table object               |
+| `userId`      | `string`       | User ID to purge                         |
+| `config`      | `PurgeConfig?` | Optional configuration                   |
+
+### `isUserDataPurged(db, auditTable, userId)`
+
+Returns `true` if no audit entries exist with this `userId`. Use for idempotency checks.
+
+### `anonymizeJsonData(data, piiFields)`
+
+Strips named fields from a JSON object recursively. Returns null if given null.
+
+### `PurgeConfig`
+
+| Field               | Type       | Default         | Description                                          |
+| ------------------- | ---------- | --------------- | ---------------------------------------------------- |
+| `piiFields`         | `string[]` | See default list | Field names to remove from `oldData` and `newData`  |
+| `anonymizedUserId`  | `string`   | `"PURGED_USER"` | Replacement value written to the `userId` column     |
+
+### `PurgeResult`
+
+| Field               | Type       | Description                                          |
+| ------------------- | ---------- | ---------------------------------------------------- |
+| `entriesAnonymized` | `number`   | Number of audit rows updated                         |
+| `tablesProcessed`   | `string[]` | Distinct table names found across all matched entries |

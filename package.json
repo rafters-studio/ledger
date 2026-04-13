@@ -1,7 +1,7 @@
 {
-  "name": "@ezmode-games/drizzle-ledger",
+  "name": "@rafters/ledger",
   "version": "0.0.1",
-  "description": "Soft-delete, audit trail, and GDPR compliance for Drizzle ORM",
+  "description": "Soft-delete, audit trail, and GDPR compliance for any ORM",
   "type": "module",
   "exports": {
     ".": {
@@ -178,6 +178,7 @@
   "keywords": [
     "drizzle",
     "orm",
+    "orm-agnostic",
     "soft-delete",
     "audit-trail",
     "audit-log",
@@ -187,15 +188,15 @@
     "postgres",
     "mysql"
   ],
-  "author": "ezmode.games",
+  "author": "Sean Silvius",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ezmode-games/drizzle-ledger"
+    "url": "https://github.com/rafters-studio/ledger"
   },
-  "homepage": "https://github.com/ezmode-games/drizzle-ledger#readme",
+  "homepage": "https://github.com/rafters-studio/ledger#readme",
   "bugs": {
-    "url": "https://github.com/ezmode-games/drizzle-ledger/issues"
+    "url": "https://github.com/rafters-studio/ledger/issues"
   },
   "packageManager": "pnpm@10.28.0",
   "engines": {

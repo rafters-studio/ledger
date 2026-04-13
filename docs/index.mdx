@@ -1,0 +1,150 @@
+# @rafters/ledger
+
+Soft-delete, audit trail, and GDPR compliance for [Drizzle ORM](https://orm.drizzle.team/). SQLite, PostgreSQL, MySQL.
+
+```bash
+pnpm add @rafters/ledger
+```
+
+Peer dependency: `drizzle-orm >= 0.30.0`
+
+---
+
+## What You Get
+
+| Feature | What it does |
+|---|---|
+| Soft-delete columns | `...softDeleteColumns` adds `deleted_at` and `deleted_by` to any table |
+| Automatic soft-delete | `createAuditedDb` rewrites `db.delete()` to an UPDATE for tables with `deleted_at` |
+| Audit trail | `auditLog` schema + context middleware captures who changed what, when, from where |
+| GDPR purge | `purgeUserData` anonymizes PII in audit entries; leaves the trail intact |
+| Better Auth plugin | Hooks into `databaseHooks` to log user/account mutations and intercept hard deletes |
+
+---
+
+## Quick Start
+
+This example uses SQLite / Cloudflare D1. Postgres and MySQL use different import paths for the dialect-specific pieces; the API is identical.
+
+### 1. Schema
+
+```typescript
+// src/db/schema.ts
+import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { softDeleteColumns } from '@rafters/ledger/soft-delete/sqlite';
+import { auditLog } from '@rafters/ledger/schema/sqlite';
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  ...softDeleteColumns,
+});
+
+export { auditLog };
+```
+
+`softDeleteColumns` adds `deleted_at` (integer timestamp) and `deleted_by` (text) to the table. `auditLog` is a pre-built Drizzle table definition; add it to your migration.
+
+### 2. Context middleware
+
+```typescript
+// src/middleware/ledger.ts
+import { createLedgerContext, runWithLedgerContext } from '@rafters/ledger/context';
+
+// Hono example; adapt to your framework
+app.use(async (c, next) => {
+  const context = createLedgerContext({
+    userId: c.get('user')?.id,
+    ip: c.req.header('x-forwarded-for'),
+    userAgent: c.req.header('user-agent'),
+    endpoint: `${c.req.method} ${c.req.path}`,
+  });
+  return runWithLedgerContext(context, next);
+});
+```
+
+`AsyncLocalStorage` propagates this context to every audit entry written downstream in the same request, across any number of service calls. Set it once; forget about it.
+
+### 3. Audited database instance
+
+```typescript
+// src/db/index.ts
+import { drizzle } from 'drizzle-orm/d1';
+import { createAuditedDb } from '@rafters/ledger/db';
+import * as schema from './schema';
+
+export function createDb(d1: D1Database) {
+  const base = drizzle(d1, { schema });
+
+  return createAuditedDb(base, {
+    auditLogTable: schema.auditLog,
+    writeAuditEntry: async (entry) => {
+      await base.insert(schema.auditLog).values({ ...entry, id: crypto.randomUUID() });
+    },
+    hardDeleteTables: ['session', 'verification'],
+  });
+}
+```
+
+`db.delete(users).where(eq(users.id, id))` now executes a soft-delete UPDATE because `users` has `deleted_at`. Tables in `hardDeleteTables` pass through to real deletes.
+
+### 4. Querying
+
+```typescript
+import { notDeleted } from '@rafters/ledger/soft-delete';
+
+// Only active users
+const activeUsers = await db
+  .select()
+  .from(users)
+  .where(notDeleted(users));
+
+// Soft-delete a user (runs as UPDATE under the hood)
+await db.delete(users).where(eq(users.id, userId));
+```
+
+### 5. GDPR purge
+
+```typescript
+import { purgeUserData } from '@rafters/ledger/gdpr';
+
+const result = await purgeUserData(db, auditLog, userId, {
+  piiFields: ['email', 'name', 'phone', 'ip', 'userAgent'],
+});
+// { entriesAnonymized: 47, tablesProcessed: ['users', 'accounts'] }
+```
+
+Strips the specified fields from `oldData` and `newData` JSON columns in every audit entry tied to that user. The audit trail structure stays intact; the personal data does not.
+
+---
+
+## Dialect Support
+
+| Dialect | Soft-delete columns | Audit log schema |
+|---|---|---|
+| SQLite / D1 | `@rafters/ledger/soft-delete/sqlite` | `@rafters/ledger/schema/sqlite` |
+| PostgreSQL | `@rafters/ledger/soft-delete/pg` | `@rafters/ledger/schema/pg` |
+| MySQL | `@rafters/ledger/soft-delete/mysql` | `@rafters/ledger/schema/mysql` |
+
+Dialect-agnostic helpers (`notDeleted`, `onlyDeleted`, `softDeleteValues`, `restoreValues`, `isSoftDeleted`) import from `@rafters/ledger/soft-delete`.
+
+---
+
+## Docs
+
+Full documentation lives in [docs/](./docs/):
+
+| File | Covers |
+|---|---|
+| `soft-delete.md` | Column helpers, query filters, restore, unique constraint considerations |
+| `audit.md` | Manual logging, AuditLogger, context propagation, SOC 2 notes |
+| `gdpr.md` | `purgeUserData`, `isUserDataPurged`, what it handles and what it does not |
+| `better-auth.md` | `ledgerPlugin`, `createSoftDeleteCallback`, flow control pattern |
+| `db.md` | `createAuditedDb` config, `hardDeleteTables`, custom soft-delete values |
+
+---
+
+## License
+
+MIT. Authored by Sean Silvius. Source: [github.com/rafters-studio/ledger](https://github.com/rafters-studio/ledger).

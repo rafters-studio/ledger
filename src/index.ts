@@ -8,7 +8,7 @@
  * @example
  * ```typescript
  * // 1. Add soft-delete columns to your tables
- * import { softDeleteColumns } from '@ezmode-games/drizzle-ledger/soft-delete/sqlite';
+ * import { softDeleteColumns } from '@rafters/ledger/soft-delete/sqlite';
  *
  * export const users = sqliteTable('users', {
  *   id: text('id').primaryKey(),
@@ -17,10 +17,10 @@
  * });
  *
  * // 2. Add the audit log table to your schema
- * export { auditLog } from '@ezmode-games/drizzle-ledger/schema/sqlite';
+ * export { auditLog } from '@rafters/ledger/schema/sqlite';
  *
  * // 3. Set up context in your middleware
- * import { runWithLedgerContext, createLedgerContext } from '@ezmode-games/drizzle-ledger/context';
+ * import { runWithLedgerContext, createLedgerContext } from '@rafters/ledger/context';
  *
  * app.use(async (c, next) => {
  *   const context = createLedgerContext({
@@ -33,7 +33,7 @@
  * });
  *
  * // 4. Use soft-delete in queries
- * import { notDeleted, softDeleteValues } from '@ezmode-games/drizzle-ledger/soft-delete';
+ * import { notDeleted, softDeleteValues } from '@rafters/ledger/soft-delete';
  *
  * const activeUsers = await db.select().from(users).where(notDeleted(users));
  * ```

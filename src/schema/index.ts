@@ -3,9 +3,9 @@
  *
  * Convenience re-exports from the SQLite schema (default dialect).
  * For dialect-specific schemas, import directly:
- * - drizzle-ledger/schema/sqlite
- * - drizzle-ledger/schema/pg
- * - drizzle-ledger/schema/mysql
+ * - ledger/schema/sqlite
+ * - ledger/schema/pg
+ * - ledger/schema/mysql
  */
 
 export type { AuditLog, AuditLogInsert, AuditLogSelect } from "./sqlite.js";

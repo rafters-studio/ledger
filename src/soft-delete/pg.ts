@@ -6,7 +6,7 @@
  * @example
  * ```typescript
  * import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
- * import { softDeleteColumns } from '@ezmode-games/drizzle-ledger/soft-delete/pg';
+ * import { softDeleteColumns } from '@rafters/ledger/soft-delete/pg';
  *
  * export const users = pgTable('users', {
  *   id: uuid('id').primaryKey().defaultRandom(),

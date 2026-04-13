@@ -1,0 +1,184 @@
+# Context Propagation
+
+Every audit entry needs to know who triggered the operation, from where, and on which endpoint. The naive approach threads those values as function arguments through every call site. `@rafters/ledger` does it once in middleware and never again.
+
+The mechanism is Node.js `AsyncLocalStorage`. Set context at the request boundary, and every audit function called anywhere in that async chain reads it automatically. No prop drilling. No global mutable state. Each request gets its own isolated context.
+
+## LedgerContext Shape
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `userId` | `string \| null` | yes | Authenticated user ID. `null` for anonymous or system operations. |
+| `ip` | `string \| null` | yes | Client IP address. |
+| `userAgent` | `string \| null` | yes | `User-Agent` header value. |
+| `endpoint` | `string \| null` | yes | Route or action identifier. Conventionally `"METHOD /path"` for HTTP, `"system:source"` for background work. |
+| `requestId` | `string` | no | Trace ID for correlating logs across services. |
+| `metadata` | `Record<string, unknown>` | no | Arbitrary key/value pairs attached to every audit entry in this context. |
+
+## Creating Context
+
+`createLedgerContext` is the standard factory. Every field defaults to `null` if omitted.
+
+```typescript
+import { createLedgerContext } from "@rafters/ledger";
+
+const context = createLedgerContext({
+  userId: session?.user?.id ?? null,
+  ip: req.headers["x-forwarded-for"] ?? null,
+  userAgent: req.headers["user-agent"] ?? null,
+  endpoint: `${req.method} ${req.url}`,
+  requestId: crypto.randomUUID(),
+});
+```
+
+For operations that have no user: scheduled jobs, migrations, background workers. Use `createSystemContext`. It sets `userId` to `null` and formats `endpoint` as `"system:{source}"`.
+
+```typescript
+import { createSystemContext } from "@rafters/ledger";
+
+const context = createSystemContext("cron:cleanup", {
+  triggeredBy: "scheduler",
+  dryRun: false,
+});
+// context.userId      => null
+// context.endpoint    => "system:cron:cleanup"
+// context.metadata    => { triggeredBy: "scheduler", dryRun: false }
+```
+
+## Running with Context
+
+`runWithLedgerContext` wraps a callback in `AsyncLocalStorage.run`. Every async operation within that callback, at any call depth, inherits the context.
+
+```typescript
+import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger";
+
+await runWithLedgerContext(
+  createLedgerContext({ userId: "usr_01j...", ip: "1.2.3.4", userAgent: "Mozilla/5.0", endpoint: "POST /mods" }),
+  async () => {
+    // Audit functions called here pick up the context automatically.
+    await createMod(db, data);
+  },
+);
+```
+
+**Hono middleware**
+
+```typescript
+import { createMiddleware } from "hono/factory";
+import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger";
+
+export const ledgerMiddleware = createMiddleware(async (c, next) => {
+  const user = c.get("user");
+
+  return runWithLedgerContext(
+    createLedgerContext({
+      userId: user?.id ?? null,
+      ip: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      userAgent: c.req.header("user-agent") ?? null,
+      endpoint: `${c.req.method} ${c.req.path}`,
+      requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
+    }),
+    next,
+  );
+});
+
+// Mount before route groups that write to the database.
+app.use("/api/*", ledgerMiddleware);
+```
+
+**Express middleware**
+
+```typescript
+import type { Request, Response, NextFunction } from "express";
+import { runWithLedgerContext, createLedgerContext } from "@rafters/ledger";
+
+export function ledgerMiddleware(req: Request, _res: Response, next: NextFunction) {
+  runWithLedgerContext(
+    createLedgerContext({
+      userId: req.user?.id ?? null,
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      endpoint: `${req.method} ${req.path}`,
+      requestId: req.headers["x-request-id"] as string | undefined,
+    }),
+    next,
+  );
+}
+
+app.use(ledgerMiddleware);
+```
+
+**Standalone usage (cron job, background task)**
+
+```typescript
+import { runWithLedgerContext, createSystemContext } from "@rafters/ledger";
+
+export async function expiredSessionsJob(db: DrizzleDB) {
+  await runWithLedgerContext(
+    createSystemContext("cron:expired-sessions"),
+    async () => {
+      await deleteExpiredSessions(db);
+    },
+  );
+}
+```
+
+## Reading Context
+
+You rarely call these directly. Audit functions call them internally before writing a log entry.
+
+`getLedgerContext()` returns the current `LedgerContext` or `null` if called outside any `runWithLedgerContext` scope.
+
+`hasLedgerContext()` returns a boolean. Use it when you need to branch on whether context is available, without pulling the full context object.
+
+```typescript
+import { getLedgerContext, hasLedgerContext } from "@rafters/ledger";
+
+// Inside any function called within runWithLedgerContext:
+const context = getLedgerContext();
+// context.userId => "usr_01j..."
+
+// Guard before reading context in utilities shared between
+// request handlers and background jobs:
+if (hasLedgerContext()) {
+  const context = getLedgerContext()!;
+  logger.info("audit context active", { userId: context.userId });
+}
+```
+
+## How It Works
+
+`AsyncLocalStorage` is the Node.js primitive for async-safe implicit state. When `storage.run(context, fn)` executes, every `getStore()` call made inside `fn`, regardless of how deep the async chain goes, returns that `context`. After `fn` resolves, that store is gone.
+
+The storage instance in `ledger` is lazily initialized: it checks `typeof AsyncLocalStorage !== "undefined"` before constructing. This makes the library safe in environments where `AsyncLocalStorage` is a global (Cloudflare Workers, Bun, Deno) and in Node.js where it comes from `node:async_hooks` exposed as a global via `--experimental-global-customevent` or the runtime's own polyfill. If the global is absent, every context function degrades gracefully: `runWithLedgerContext` runs the callback directly, `getLedgerContext` returns `null`, `hasLedgerContext` returns `false`. Audit entries still write; they just have no context attached.
+
+## Nested Context
+
+`runWithLedgerContext` creates a new scope that shadows the outer one. When the inner scope exits, the outer context resumes.
+
+```typescript
+import { runWithLedgerContext, createLedgerContext, createSystemContext, getLedgerContext } from "@rafters/ledger";
+
+await runWithLedgerContext(
+  createLedgerContext({ userId: "usr_01j...", ip: "1.2.3.4", userAgent: null, endpoint: "DELETE /users/me" }),
+  async () => {
+    // Outer: userId is "usr_01j..."
+    await softDeleteUser(db, userId);
+
+    // Temporarily switch to system context for cascading cleanup.
+    await runWithLedgerContext(
+      createSystemContext("cascade:user-delete", { triggeredBy: userId }),
+      async () => {
+        // Inner: userId is null, endpoint is "system:cascade:user-delete"
+        await archiveUserContent(db, userId);
+      },
+    );
+
+    // Back to outer: userId is "usr_01j..." again
+    const ctx = getLedgerContext();
+    // ctx?.userId => "usr_01j..."
+  },
+);
+```
+
+This pattern is useful when a user action triggers internal system work that should be attributed to the system, not the user, in the audit log.

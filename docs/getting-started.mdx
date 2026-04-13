@@ -1,0 +1,204 @@
+# Getting Started with @rafters/ledger
+
+Drizzle Ledger adds soft-delete, audit trail, and GDPR support to any Drizzle ORM project. It works against the standard Drizzle query builder; there is no schema migration runner or ORM replacement involved.
+
+This guide walks through the five steps to get a fully working setup: choosing your dialect, adding soft-delete columns, creating the audit log table, wiring context through your middleware, and wrapping the database instance.
+
+---
+
+## 1. Pick Your Dialect
+
+Everything is dialect-specific. Import from the subpath that matches your database.
+
+| Database              | Soft-delete columns                          | Audit log schema                          |
+| --------------------- | -------------------------------------------- | ----------------------------------------- |
+| SQLite / Cloudflare D1 | `@rafters/ledger/soft-delete/sqlite` | `@rafters/ledger/schema/sqlite`   |
+| PostgreSQL            | `@rafters/ledger/soft-delete/pg`     | `@rafters/ledger/schema/pg`       |
+| MySQL                 | `@rafters/ledger/soft-delete/mysql`  | `@rafters/ledger/schema/mysql`    |
+
+All three dialects export the same surface: `softDeleteColumns`, `softDeleteTimestamp`, `auditLog`, and `createAuditLogTable`. The column types differ; the API does not.
+
+---
+
+## 2. Add Soft-Delete Columns to Your Tables
+
+Spread `softDeleteColumns` into any table definition that should support soft-delete. The spread adds `deletedAt` (timestamp) and `deletedBy` (user ID string) in one line.
+
+```typescript
+import { sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { softDeleteColumns } from "@rafters/ledger/soft-delete/sqlite";
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  name: text("name").notNull(),
+  ...softDeleteColumns,
+});
+```
+
+The resulting table has two additional columns: `deleted_at` (integer, timestamp_ms) and `deleted_by` (text). Both are nullable; a null `deleted_at` means the record is live.
+
+If you do not need to track who deleted a record, use `softDeleteTimestamp` instead. It adds only `deletedAt`.
+
+```typescript
+import { softDeleteTimestamp } from "@rafters/ledger/soft-delete/sqlite";
+
+export const events = sqliteTable("events", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  ...softDeleteTimestamp,
+});
+```
+
+---
+
+## 3. Add the Audit Log Table
+
+Import the `auditLog` table from the schema subpath and include it in your Drizzle schema exports.
+
+```typescript
+// src/db/schema.ts
+export { auditLog } from "@rafters/ledger/schema/sqlite";
+export { users } from "./users.ts";
+export { sessions } from "./sessions.ts";
+```
+
+If you need a custom table name (for example, to avoid conflicts with an existing `audit_log` table), use `createAuditLogTable`.
+
+```typescript
+import { createAuditLogTable } from "@rafters/ledger/schema/sqlite";
+
+export const activityLog = createAuditLogTable("activity_log");
+```
+
+The audit log table structure is the same regardless of table name:
+
+| Column       | Type         | Description                                          |
+| ------------ | ------------ | ---------------------------------------------------- |
+| `id`         | text PK      | UUIDv7                                               |
+| `table_name` | text         | The table that was modified                          |
+| `record_id`  | text         | Primary key of the affected row                      |
+| `action`     | text enum    | `INSERT`, `UPDATE`, `DELETE`, `SOFT_DELETE`, `RESTORE` |
+| `old_data`   | text (JSON)  | Row state before the change; null for INSERT         |
+| `new_data`   | text (JSON)  | Row state after the change; null for DELETE          |
+| `user_id`    | text         | Who made the change; null for system operations      |
+| `ip`         | text         | Request IP address                                   |
+| `user_agent` | text         | Request user agent                                   |
+| `endpoint`   | text         | API endpoint or action identifier                    |
+| `request_id` | text         | Trace ID for correlating entries within a request    |
+| `created_at` | timestamp    | When the change occurred                             |
+
+Create the table migration with your normal migration workflow. For Cloudflare D1 with Wrangler:
+
+```bash
+wrangler d1 migrations create add-audit-log
+# Write the CREATE TABLE statement into the generated file, then:
+wrangler d1 migrations apply
+```
+
+The `AUDIT_LOG_INDEXES` export contains the four recommended index statements. Add them to the migration or run them separately.
+
+```typescript
+import { AUDIT_LOG_INDEXES } from "@rafters/ledger/schema/sqlite";
+// CREATE INDEX IF NOT EXISTS idx_audit_log_table_record ON audit_log(table_name, record_id)
+// CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)
+// CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)
+// CREATE INDEX IF NOT EXISTS idx_audit_log_request ON audit_log(request_id)
+```
+
+---
+
+## 4. Wire Context in Middleware
+
+Ledger uses `AsyncLocalStorage` to carry audit context through the async call stack. You set the context once in middleware; every nested database call in that request has access to it without explicit parameter passing.
+
+```typescript
+import { Hono } from "hono";
+import {
+  createLedgerContext,
+  runWithLedgerContext,
+} from "@rafters/ledger/context";
+
+const app = new Hono();
+
+app.use(async (c, next) => {
+  const context = createLedgerContext({
+    userId: c.get("user")?.id ?? null,
+    ip: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    userAgent: c.req.header("user-agent") ?? null,
+    endpoint: `${c.req.method} ${c.req.path}`,
+    requestId: c.get("requestId"),
+  });
+
+  return runWithLedgerContext(context, next);
+});
+```
+
+`runWithLedgerContext` wraps the entire downstream handler. Any code that runs inside `next()`, including handlers two or three levels deep, reads the same context via `getLedgerContext()`. The context is scoped to the current async execution tree; concurrent requests do not interfere.
+
+For cron jobs, background workers, and other operations that have no request context, use `createSystemContext`. The `endpoint` field is set to `system:<source>` and `userId` is null.
+
+```typescript
+import {
+  createSystemContext,
+  runWithLedgerContext,
+} from "@rafters/ledger/context";
+
+// In a Cloudflare Workers scheduled handler
+export default {
+  async scheduled(_event: ScheduledEvent, env: Env) {
+    await runWithLedgerContext(
+      createSystemContext("cron:session-cleanup"),
+      async () => {
+        await cleanupExpiredSessions(env);
+      }
+    );
+  },
+};
+```
+
+---
+
+## 5. Wrap Your Database
+
+`createAuditedDb` monkeypatches the `delete()` method on a Drizzle instance. For any table that has a `deletedAt` column, `db.delete(table).where(condition)` becomes an `UPDATE` that sets `deleted_at` and `deleted_by`. For tables without `deletedAt`, delete passes through unchanged.
+
+```typescript
+import { drizzle } from "drizzle-orm/d1";
+import { createAuditedDb } from "@rafters/ledger/db";
+import * as schema from "./schema.ts";
+
+export function buildDb(d1: D1Database) {
+  const base = drizzle(d1, { schema });
+  return createAuditedDb(base, {
+    hardDeleteTables: ["session", "verification"],
+  });
+}
+```
+
+`hardDeleteTables` accepts table names (the SQL table name, not the Drizzle variable name). Any table in this list always hard-deletes regardless of whether it has a `deletedAt` column. Session and verification tables are the common case: they have no meaningful "deleted" state and should be purged immediately.
+
+With this in place, the following code soft-deletes the user row:
+
+```typescript
+import { eq } from "drizzle-orm";
+import { db } from "./db.ts";
+import { users } from "./schema.ts";
+
+// Executes: UPDATE users SET deleted_at = ?, deleted_by = ? WHERE id = ?
+await db.delete(users).where(eq(users.id, userId));
+```
+
+The `deleted_by` value comes from the ledger context automatically. No changes to call sites are required.
+
+---
+
+## From Here
+
+The full behavior of each subsystem is documented separately.
+
+- [soft-delete.md](./soft-delete.md): Querying live records, restoring soft-deleted rows, and handling the `deletedAt` filter.
+- [audit-trail.md](./audit-trail.md): Writing audit entries manually, querying history for a record, and correlating entries by request ID.
+- [context.md](./context.md): The full `LedgerContext` shape, custom context factories, and using `getLedgerContext()` in handlers.
+- [gdpr.md](./gdpr.md): Anonymizing and erasing user data across multiple tables in a single operation.
+- [better-auth.md](./better-auth.md): The `ledgerPlugin` for better-auth that writes audit entries on sign-in, sign-out, and credential changes.

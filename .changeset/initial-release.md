@@ -1,5 +1,5 @@
 ---
-"@ezmode-games/drizzle-ledger": minor
+"@rafters/ledger": patch
 ---
 
 Initial release. Soft-delete, audit trail, and GDPR compliance for Drizzle ORM.
