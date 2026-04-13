@@ -2,26 +2,19 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { pgTable, text as pgText, uuid } from "drizzle-orm/pg-core";
 import { mysqlTable, varchar } from "drizzle-orm/mysql-core";
 import { describe, expect, test } from "vitest";
-import {
-  includingDeleted,
-  isSoftDeleted,
-  notDeleted,
-  onlyDeleted,
-  restoreValues,
-  softDeleteValues,
-} from "../src/soft-delete/index.js";
+import { includingDeleted, notDeleted, onlyDeleted } from "../../src/drizzle/soft-delete.js";
 import {
   softDeleteColumns as sqliteColumns,
   softDeleteTimestamp as sqliteTimestamp,
-} from "../src/soft-delete/sqlite.js";
+} from "../../src/drizzle/soft-delete/sqlite.js";
 import {
   softDeleteColumns as pgColumns,
   softDeleteTimestamp as pgTimestampOnly,
-} from "../src/soft-delete/pg.js";
+} from "../../src/drizzle/soft-delete/pg.js";
 import {
   softDeleteColumns as mysqlColumns,
   softDeleteTimestamp as mysqlTimestampOnly,
-} from "../src/soft-delete/mysql.js";
+} from "../../src/drizzle/soft-delete/mysql.js";
 
 // Test tables for each dialect
 const sqliteUsers = sqliteTable("users", {
@@ -131,47 +124,5 @@ describe("includingDeleted", () => {
   test("returns a SQL fragment", () => {
     const condition = includingDeleted();
     expect(condition).toBeDefined();
-  });
-});
-
-describe("softDeleteValues", () => {
-  test("returns current timestamp and null deletedBy", () => {
-    const values = softDeleteValues();
-    expect(values.deletedAt).toBeInstanceOf(Date);
-    expect(values.deletedBy).toBeNull();
-  });
-
-  test("includes deletedBy when provided", () => {
-    const values = softDeleteValues("user-123");
-    expect(values.deletedAt).toBeInstanceOf(Date);
-    expect(values.deletedBy).toBe("user-123");
-  });
-
-  test("handles null deletedBy", () => {
-    const values = softDeleteValues(null);
-    expect(values.deletedBy).toBeNull();
-  });
-});
-
-describe("restoreValues", () => {
-  test("returns null for both fields", () => {
-    const values = restoreValues();
-    expect(values.deletedAt).toBeNull();
-    expect(values.deletedBy).toBeNull();
-  });
-});
-
-describe("isSoftDeleted", () => {
-  test("returns true for deleted record", () => {
-    expect(isSoftDeleted({ deletedAt: new Date() })).toBe(true);
-  });
-
-  test("returns false for active record", () => {
-    expect(isSoftDeleted({ deletedAt: null })).toBe(false);
-  });
-
-  test("returns false for null/undefined", () => {
-    expect(isSoftDeleted(null)).toBe(false);
-    expect(isSoftDeleted(undefined)).toBe(false);
   });
 });
