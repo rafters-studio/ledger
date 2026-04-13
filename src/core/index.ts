@@ -16,6 +16,9 @@ export type {
   SoftDeleteResult,
 } from "./types.js";
 
+// Adapter interface
+export type { LedgerAdapter } from "./adapter.js";
+
 // Context
 export {
   createLedgerContext,
