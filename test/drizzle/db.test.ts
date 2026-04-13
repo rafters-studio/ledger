@@ -1,7 +1,7 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { describe, expect, test, vi } from "vitest";
-import { createAuditedDb, getTableName, hasColumn } from "../src/db.js";
-import { createLedgerContext, runWithLedgerContext } from "../src/context.js";
+import { createAuditedDb, getTableName, hasColumn } from "../../src/drizzle/db.js";
+import { createLedgerContext, runWithLedgerContext } from "../../src/core/context.js";
 
 // Test tables
 const usersWithSoftDelete = sqliteTable("users", {

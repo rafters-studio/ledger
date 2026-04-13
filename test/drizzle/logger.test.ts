@@ -1,6 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
-import { createLedgerContext, runWithLedgerContext } from "../src/context.js";
-import { type AuditEntryInput, AuditLogger, extractRecordId, parseQuery } from "../src/logger.js";
+import { createLedgerContext, runWithLedgerContext } from "../../src/core/context.js";
+import {
+  type AuditEntryInput,
+  AuditLogger,
+  extractRecordId,
+  parseQuery,
+} from "../../src/drizzle/logger.js";
 
 describe("parseQuery", () => {
   test("parses INSERT query", () => {
