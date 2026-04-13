@@ -10,20 +10,20 @@ Soft-delete columns are dialect-specific. Import from the subpath that matches y
 
 ```typescript
 // SQLite / Cloudflare D1
-import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/sqlite';
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/drizzle/soft-delete/sqlite';
 
 // PostgreSQL
-import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/pg';
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/drizzle/soft-delete/pg';
 
 // MySQL
-import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/soft-delete/mysql';
+import { softDeleteColumns, softDeleteTimestamp } from '@rafters/ledger/drizzle/soft-delete/mysql';
 ```
 
 `softDeleteColumns` adds both `deletedAt` and `deletedBy`. `softDeleteTimestamp` adds `deletedAt` only, for tables where attribution is not needed.
 
 ```typescript
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { softDeleteColumns } from '@rafters/ledger/soft-delete/sqlite';
+import { softDeleteColumns } from '@rafters/ledger/drizzle/soft-delete/sqlite';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -34,7 +34,7 @@ export const users = sqliteTable('users', {
 
 ```typescript
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { softDeleteTimestamp } from '@rafters/ledger/soft-delete/sqlite';
+import { softDeleteTimestamp } from '@rafters/ledger/drizzle/soft-delete/sqlite';
 
 export const events = sqliteTable('events', {
   id: text('id').primaryKey(),
@@ -57,14 +57,14 @@ SQLite stores the timestamp as an integer millisecond value. Drizzle reads it ba
 
 ## Query Filters
 
-Three filters cover every visibility case. Import from `@rafters/ledger/soft-delete`.
+`notDeleted` and `onlyDeleted` import from `@rafters/ledger/drizzle`. These are Drizzle-specific SQL fragments.
 
 ```typescript
 import {
   notDeleted,
   onlyDeleted,
   includingDeleted,
-} from '@rafters/ledger/soft-delete';
+} from '@rafters/ledger/drizzle';
 ```
 
 ### `notDeleted(table)`
@@ -108,14 +108,14 @@ const allUsers = await db
 
 ## Manual Soft-Delete
 
-For direct control over update queries, three functions handle the value construction and record inspection.
+For direct control over update queries, three functions handle the value construction and record inspection. These are pure helpers with no Drizzle dependency; import them from `@rafters/ledger`.
 
 ```typescript
 import {
   softDeleteValues,
   restoreValues,
   isSoftDeleted,
-} from '@rafters/ledger/soft-delete';
+} from '@rafters/ledger';
 ```
 
 ### `softDeleteValues(deletedBy?)`
@@ -172,7 +172,7 @@ if (isSoftDeleted(user)) {
 
 ```typescript
 import { drizzle } from 'drizzle-orm/d1';
-import { createAuditedDb } from '@rafters/ledger/db';
+import { createAuditedDb } from '@rafters/ledger/drizzle';
 
 const baseDb = drizzle(env.DB);
 export const db = createAuditedDb(baseDb);
@@ -228,11 +228,11 @@ Pass the SQL table name string, not the Drizzle table variable name. The wrapper
 
 ```typescript
 import { drizzle } from 'drizzle-orm/d1';
-import { createAuditedDb } from '@rafters/ledger/db';
+import { createAuditedDb } from '@rafters/ledger/drizzle';
 import {
   runWithLedgerContext,
   createLedgerContext,
-} from '@rafters/ledger/context';
+} from '@rafters/ledger';
 
 const baseDb = drizzle(env.DB);
 export const db = createAuditedDb(baseDb, {
@@ -276,7 +276,7 @@ Two utility types add soft-delete fields to an existing record type.
 import type {
   WithSoftDelete,
   WithSoftDeleteTimestamp,
-} from '@rafters/ledger/soft-delete';
+} from '@rafters/ledger';
 ```
 
 ### `WithSoftDelete<T>`
