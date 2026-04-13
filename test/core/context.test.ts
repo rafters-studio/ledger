@@ -5,7 +5,7 @@ import {
   getLedgerContext,
   hasLedgerContext,
   runWithLedgerContext,
-} from "../src/context.js";
+} from "../../src/core/context.js";
 
 describe("createLedgerContext", () => {
   test("creates context with all fields", () => {
