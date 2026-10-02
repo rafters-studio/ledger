@@ -412,6 +412,39 @@ describe("ledger kysely plugin", () => {
       expect(await ctx.db.selectFrom("users").selectAll().execute()).toHaveLength(1);
     });
 
+    it("throws when the table is interpolated with sql.table or sql.id", async () => {
+      const id = uuidv7();
+      await ctx.db
+        .insertInto("users")
+        .values({ id, name: "n", email: null, deleted_at: null })
+        .execute();
+      await expect(sql`delete from ${sql.table("users")}`.execute(ctx.db)).rejects.toBeInstanceOf(
+        LedgerRawDeleteError,
+      );
+      await expect(sql`delete from ${sql.id("users")}`.execute(ctx.db)).rejects.toBeInstanceOf(
+        LedgerRawDeleteError,
+      );
+      await expect(
+        sql`delete from ${sql.table("main.users")}`.execute(ctx.db),
+      ).rejects.toBeInstanceOf(LedgerRawDeleteError);
+      await expect(sql`${sql.raw("delete")} from users`.execute(ctx.db)).rejects.toBeInstanceOf(
+        LedgerRawDeleteError,
+      );
+      expect(await ctx.db.selectFrom("users").selectAll().execute()).toHaveLength(1);
+    });
+
+    it("refuses a DELETE whose target is a bound value it cannot name", async () => {
+      await expect(sql`delete from ${sql.val("users")}`.execute(ctx.db)).rejects.toBeInstanceOf(
+        LedgerRawDeleteError,
+      );
+    });
+
+    it("runs an interpolated DELETE of a table without deleted_at", async () => {
+      await ctx.db.insertInto("tags").values({ id: uuidv7(), label: "t" }).execute();
+      await sql`delete from ${sql.table("tags")}`.execute(ctx.db);
+      expect(await ctx.db.selectFrom("tags").selectAll().execute()).toHaveLength(0);
+    });
+
     it("runs a DELETE of a table without deleted_at as written", async () => {
       await ctx.db.insertInto("tags").values({ id: uuidv7(), label: "t" }).execute();
       await sql`DELETE FROM tags`.execute(ctx.db);

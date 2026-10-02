@@ -100,7 +100,7 @@ const DELETED_AT = "deleted_at";
 // D1 allows 100 bound parameters per statement; an entry binds 11.
 const ENTRIES_PER_STATEMENT = 8;
 const RAW_DELETE_PATTERN =
-  /\bdelete\s+from\s+(?:(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+)\s*\.\s*)*("[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+)/gi;
+  /\bdelete\s+from\s+(?:(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+)\s*\.\s*)*("[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+|\?)/gi;
 
 function unquote(identifier: string): string {
   const first = identifier[0];
@@ -113,6 +113,32 @@ function tableName(node: OperationNode | undefined): string | null {
   if (AliasNode.is(node)) return tableName(node.node);
   if (TableNode.is(node)) return node.table.identifier.name;
   return null;
+}
+
+const UNRESOLVED = "?";
+
+function quoted(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+/** Rebuild a raw statement's text, inlining identifiers and marking every other parameter. */
+function renderRaw(node: RawNode): string {
+  let text = node.sqlFragments[0] ?? "";
+  node.parameters.forEach((parameter, index) => {
+    text += renderParameter(parameter) + (node.sqlFragments[index + 1] ?? "");
+  });
+  return text;
+}
+
+function renderParameter(node: OperationNode): string {
+  if (RawNode.is(node)) return renderRaw(node);
+  if (TableNode.is(node)) {
+    const { schema, identifier } = node.table;
+    return `${schema ? `${quoted(schema.name)}.` : ""}${quoted(identifier.name)}`;
+  }
+  if (IdentifierNode.is(node)) return quoted(node.name);
+  if (ColumnNode.is(node)) return quoted(node.column.name);
+  return UNRESOLVED;
 }
 
 function updatedColumns(node: UpdateQueryNode): string[] {
@@ -325,11 +351,13 @@ export class LedgerKyselyPlugin implements KyselyPlugin {
   }
 
   #checkRaw(node: RawNode): void {
-    const text = node.sqlFragments.join(" ");
+    const text = renderRaw(node);
     if (!/\bdelete\b/i.test(text)) return;
     const tables = this.#requireTables();
     for (const match of text.matchAll(RAW_DELETE_PATTERN)) {
       const name = unquote(match[1] as string);
+      // A target built from a value Kysely cannot name could be any table.
+      if (name === UNRESOLVED) throw new LedgerRawDeleteError("(unresolved target)");
       if (name === this.#auditTable) continue;
       if (tables.get(name.toLowerCase())?.softDeletes) throw new LedgerRawDeleteError(name);
     }

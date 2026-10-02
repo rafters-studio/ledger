@@ -54,7 +54,7 @@ Kysely requires a plugin to return the kind of statement it was given, so a soft
 
 ## Raw SQL
 
-A raw `DELETE FROM <table>` written with Kysely's `sql` template throws `LedgerRawDeleteError` when the table has `deleted_at`, and nothing is deleted. A raw `DELETE` on a table without `deleted_at` runs as written. Other raw SQL is not inspected or audited; only `DELETE FROM` is checked.
+A raw `DELETE FROM <table>` written with Kysely's `sql` template throws `LedgerRawDeleteError` when the table has `deleted_at`, and nothing is deleted. A raw `DELETE` on a table without `deleted_at` runs as written. Interpolated names (`sql.table`, `sql.id`) are resolved before the check, and a `DELETE FROM` target the plugin cannot name, such as a bound value, is refused. Other raw SQL is not inspected or audited; only `DELETE FROM` is checked.
 
 ## The audit table itself
 
