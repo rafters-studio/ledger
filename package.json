@@ -94,6 +94,16 @@
         "default": "./dist/drizzle/soft-delete/mysql.cjs"
       }
     },
+    "./kysely": {
+      "import": {
+        "types": "./dist/kysely/index.d.ts",
+        "default": "./dist/kysely/index.js"
+      },
+      "require": {
+        "types": "./dist/kysely/index.d.cts",
+        "default": "./dist/kysely/index.cjs"
+      }
+    },
     "./sql/sqlite/audit.sql": "./sql/sqlite/audit.sql",
     "./better-auth": {
       "import": {
@@ -156,13 +166,17 @@
   },
   "peerDependencies": {
     "better-auth": ">=1.5.0 <1.7.0",
-    "drizzle-orm": ">=0.30.0"
+    "drizzle-orm": ">=0.30.0",
+    "kysely": ">=0.28.0"
   },
   "peerDependenciesMeta": {
     "better-auth": {
       "optional": true
     },
     "drizzle-orm": {
+      "optional": true
+    },
+    "kysely": {
       "optional": true
     }
   },
@@ -173,6 +187,7 @@
     "@changesets/cli": "^2.29.8",
     "better-auth": "^1.6.25",
     "drizzle-orm": "^0.45.1",
+    "kysely": "^0.29.4",
     "lefthook": "^2.1.2",
     "oxfmt": "^0.45.0",
     "oxlint": "^1.60.0",

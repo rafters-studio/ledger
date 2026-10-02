@@ -1,0 +1,104 @@
+# Kysely Plugin (SQLite / D1)
+
+`@rafters/ledger/kysely` is a [Kysely](https://kysely.dev) plugin that turns deletes into soft deletes and writes an audit entry for every insert, update, and delete. It targets SQLite and Cloudflare D1. Entries go to the value-free audit table from [`audit-table-sqlite.mdx`](./audit-table-sqlite.mdx); apply that SQL first.
+
+Reads are not filtered. Soft-deleted rows still come back from `select` queries until you exclude them with a `where deleted_at is null`.
+
+---
+
+## Setup
+
+Pass the plugin to your Kysely instance. Give it the same dialect, so it can read the schema and write audit entries on its own connection.
+
+```typescript
+import { Kysely } from "kysely";
+import { D1Dialect } from "kysely-d1";
+import { ledger } from "@rafters/ledger/kysely";
+
+const dialect = new D1Dialect({ database: env.DB });
+const db = new Kysely<Database>({ dialect, plugins: [ledger({ dialect })] });
+```
+
+Nothing else changes in your code. Set the actor with `runWithLedgerContext` as described in [context](./context.mdx); outside a context, `user_id`, `ip`, `user_agent`, `endpoint`, and `request_id` are null.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `dialect` | required | The dialect you pass to `new Kysely`. |
+| `auditTable` | `ledger_audit` | The table created by `sql/sqlite/audit.sql`. |
+| `log` | `console.info` | Receives the one startup line listing the soft-delete tables. |
+
+## The schema is the declaration
+
+At startup the plugin reads the schema through Kysely's introspection and logs the tables that have a `deleted_at` column, once:
+
+```
+[ledger] soft-delete tables: posts, users
+```
+
+A table soft-deletes if and only if it has a `deleted_at` column. There is no allowlist and no exclude list. Add or drop the column to change a table's behavior. The column holds milliseconds since the Unix epoch, matching `softDeleteColumns` in the Drizzle adapter.
+
+## What each statement does
+
+| Statement | Runs as | Audit entries |
+| --- | --- | --- |
+| `deleteFrom` on a table with `deleted_at` | `UPDATE ... SET deleted_at = <now>` on the matched rows | one `SOFT_DELETE` per affected row, `changed_fields` `["deleted_at"]` |
+| `deleteFrom` on a table without `deleted_at` | as written | one `DELETE` per affected row |
+| `insertInto` | as written | one `INSERT` per inserted row |
+| `updateTable` | as written | one `UPDATE` per affected row, `changed_fields` = the columns in `set` |
+
+Every entry carries the row's real primary key in `record_id`. A composite key is recorded as a JSON array, such as `["org-1","user-1"]`. A statement that affects zero rows records nothing, and an insert that skips a row (`onConflict(...).doNothing()`) records nothing for it. An upsert that updates an existing row is recorded as `INSERT`.
+
+The plugin adds a `RETURNING` clause to read the keys, so it needs SQLite 3.35 or later (D1 qualifies). The result your code receives is shaped as if nothing had been added: `numInsertedOrUpdatedRows`, `numUpdatedRows`, `numDeletedRows`, and `insertId` hold the same values, and your own `returning` columns come back unchanged.
+
+Kysely requires a plugin to return the kind of statement it was given, so a soft delete is two steps. The `DELETE` is sent with a condition that matches nothing, and the plugin then runs the `UPDATE` on its own connection and reports that result in place of the `DELETE`'s. Deleting an already soft-deleted row again sets `deleted_at` again and records another `SOFT_DELETE`.
+
+## Raw SQL
+
+A raw `DELETE FROM <table>` written with Kysely's `sql` template throws `LedgerRawDeleteError` when the table has `deleted_at`, and nothing is deleted. A raw `DELETE` on a table without `deleted_at` runs as written. Other raw SQL is not inspected or audited; only `DELETE FROM` is checked.
+
+## The audit table itself
+
+Writes to the audit table through your Kysely instance are never audited and never rewritten. The database's own triggers still abort any UPDATE or DELETE there.
+
+## Errors
+
+If writing an audit entry fails, the error reaches your caller. It is never swallowed.
+
+**On D1 the change and its audit entry are separate statements, not one transaction.** If the audit write fails, the change has already been applied. On a single SQLite connection inside `db.transaction()`, the entries roll back with the change.
+
+The plugin fails closed instead of running a write it cannot audit:
+
+| Error | When |
+| --- | --- |
+| `LedgerNotReadyError` | A write arrives before the schema is read. |
+| `LedgerUnknownTableError` | A write targets a table that was not in the schema read at startup. |
+| `LedgerRawDeleteError` | A raw `DELETE` targets a soft-delete table. |
+| `LedgerUnsupportedStatementError` | A `DELETE` does not target exactly one table. |
+| `LedgerAuditTableMissingError` | The audit table does not exist (rejects `ready()`). |
+
+The schema read is asynchronous and a Kysely plugin transforms queries synchronously, so a write issued in the first moments after construction can arrive too early. Await it once at startup:
+
+```typescript
+const plugin = ledger({ dialect });
+const db = new Kysely<Database>({ dialect, plugins: [plugin] });
+await plugin.ready();
+```
+
+After a migration creates tables, call `await plugin.refresh()` so the plugin learns them. Run Kysely's own `Migrator` on an instance without the plugin.
+
+## Exports
+
+```typescript
+import {
+  ledger,
+  LedgerKyselyPlugin,
+  LedgerNotReadyError,
+  LedgerUnknownTableError,
+  LedgerRawDeleteError,
+  LedgerUnsupportedStatementError,
+  LedgerAuditTableMissingError,
+  type LedgerKyselyOptions,
+} from "@rafters/ledger/kysely";
+```
+
+`plugin.ready()` resolves when the schema is read, `plugin.refresh()` reads it again, and `plugin.softDeleteTables()` returns the soft-delete table names.

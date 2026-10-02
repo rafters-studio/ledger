@@ -25,6 +25,7 @@ export default defineConfig({
       "@rafters/ledger/core/gdpr": "./src/core/gdpr.ts",
       "@rafters/ledger/core/errors": "./src/core/errors.ts",
       "@rafters/ledger/core": "./src/core/index.ts",
+      "@rafters/ledger/kysely": "./src/kysely/index.ts",
       "@rafters/ledger/better-auth": "./src/better-auth.ts",
       "@rafters/ledger": "./src/index.ts",
     },
