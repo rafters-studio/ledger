@@ -20,6 +20,7 @@ Full documentation: [docs/](./docs/)
 | [Soft-Delete](./docs/soft-delete.mdx) | Column helpers, query filters, automatic soft-delete, restore |
 | [Audit Trail](./docs/audit-trail.mdx) | AuditLogger, manual logging, history queries |
 | [Value-Free Audit Table](./docs/audit-table-sqlite.mdx) | Append-only SQLite/D1 audit SQL, no field values stored |
+| [Kysely](./docs/kysely.mdx) | Soft-delete and audit plugin for SQLite and D1 |
 | [Context](./docs/context.mdx) | AsyncLocalStorage propagation, middleware setup |
 | [GDPR](./docs/gdpr.mdx) | `purgeUserData`, PII anonymization, admin preservation |
 | [Better Auth](./docs/better-auth.mdx) | `ledgerPlugin`, `createSoftDeleteCallback`, flow control |

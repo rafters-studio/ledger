@@ -47,6 +47,12 @@ function safeLog(message: string): void {
  * Returns null if AsyncLocalStorage is not available (graceful degradation).
  */
 let ledgerStorage: AsyncLocalStorage<LedgerContext> | null = null;
+
+// Each package entry point (root, /kysely, /drizzle, /better-auth) is bundled
+// with its own copy of this module. Keeping the storage on globalThis lets a
+// context set through one entry be read through another.
+const STORAGE_KEY = Symbol.for("@rafters/ledger.context");
+type StorageHost = { [STORAGE_KEY]?: AsyncLocalStorage<LedgerContext> };
 let storageInitialized = false;
 let degradationWarned = false;
 
@@ -55,7 +61,9 @@ function getStorage(): AsyncLocalStorage<LedgerContext> | null {
     storageInitialized = true;
     // Check if AsyncLocalStorage is available (not available in some test environments)
     if (typeof AsyncLocalStorage !== "undefined") {
-      ledgerStorage = new AsyncLocalStorage<LedgerContext>();
+      const host = globalThis as StorageHost;
+      host[STORAGE_KEY] ??= new AsyncLocalStorage<LedgerContext>();
+      ledgerStorage = host[STORAGE_KEY];
     }
   }
   if (ledgerStorage === null && !degradationWarned) {

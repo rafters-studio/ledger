@@ -12,11 +12,12 @@ export default defineConfig({
     "drizzle/soft-delete/pg": "src/drizzle/soft-delete/pg.ts",
     "drizzle/soft-delete/mysql": "src/drizzle/soft-delete/mysql.ts",
     "better-auth": "src/better-auth.ts",
+    "kysely/index": "src/kysely/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
   splitting: false,
   sourcemap: true,
-  external: ["drizzle-orm", "better-auth"],
+  external: ["drizzle-orm", "better-auth", "kysely"],
 });
