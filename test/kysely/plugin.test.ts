@@ -469,3 +469,84 @@ describe("ledger context across bundled entry points", () => {
     expect(seen?.userId).toBe("shared");
   });
 });
+
+describe("shared schema cache", () => {
+  function introspectionQueries(raw: DatabaseSync) {
+    const spy = vi.spyOn(raw, "prepare");
+    return () =>
+      spy.mock.calls.filter(([text]) => /sqlite_master|pragma_table_info/i.test(String(text)))
+        .length;
+  }
+
+  it("runs no introspection query for a second instance on the same database", async () => {
+    const raw = createRawDatabase();
+    const count = introspectionQueries(raw);
+    const key = {};
+    const first = ledger({ dialect: nodeSqliteDialect(raw), cacheKey: key, log: () => {} });
+    await first.ready();
+    const afterFirst = count();
+    expect(afterFirst).toBeGreaterThan(0);
+
+    const log = vi.fn();
+    const second = ledger({ dialect: nodeSqliteDialect(raw), cacheKey: key, log });
+    await second.ready();
+    const db = new Kysely<Database>({ dialect: nodeSqliteDialect(raw), plugins: [second] });
+    await db.insertInto("tags").values({ id: uuidv7(), label: "t" }).execute();
+    expect(count()).toBe(afterFirst);
+    expect(second.softDeleteTables()).toEqual(["posts", "users"]);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("shares by string key and by default dialect identity", async () => {
+    const raw = createRawDatabase();
+    const count = introspectionQueries(raw);
+    await ledger({ dialect: nodeSqliteDialect(raw), cacheKey: "app-db", log: () => {} }).ready();
+    const afterFirst = count();
+    await ledger({ dialect: nodeSqliteDialect(raw), cacheKey: "app-db", log: () => {} }).ready();
+    expect(count()).toBe(afterFirst);
+
+    const dialect = nodeSqliteDialect(raw);
+    await ledger({ dialect, log: () => {} }).ready();
+    const afterThird = count();
+    await ledger({ dialect, log: () => {} }).ready();
+    expect(count()).toBe(afterThird);
+  });
+
+  it("does not share between different keys", async () => {
+    const raw = createRawDatabase();
+    const count = introspectionQueries(raw);
+    await ledger({ dialect: nodeSqliteDialect(raw), cacheKey: "one", log: () => {} }).ready();
+    const afterFirst = count();
+    await ledger({ dialect: nodeSqliteDialect(raw), cacheKey: "two", log: () => {} }).ready();
+    expect(count()).toBeGreaterThan(afterFirst);
+  });
+
+  it("refresh() re-reads and every instance on the key sees the result", async () => {
+    const raw = createRawDatabase();
+    const key = {};
+    const a = ledger({ dialect: nodeSqliteDialect(raw), cacheKey: key, log: () => {} });
+    const b = ledger({ dialect: nodeSqliteDialect(raw), cacheKey: key, log: () => {} });
+    await a.ready();
+    raw.exec("CREATE TABLE late (id TEXT PRIMARY KEY, deleted_at INTEGER)");
+    const count = introspectionQueries(raw);
+    await a.refresh();
+    expect(count()).toBeGreaterThan(0);
+    expect(b.softDeleteTables()).toEqual(["late", "posts", "users"]);
+  });
+
+  it("concurrent instances share one in-flight read", async () => {
+    const raw = createRawDatabase();
+    const count = introspectionQueries(raw);
+    const key = {};
+    const one = ledger({ dialect: nodeSqliteDialect(raw), cacheKey: key, log: () => {} });
+    const single = await one.ready().then(count);
+    const raw2 = createRawDatabase();
+    const count2 = introspectionQueries(raw2);
+    const key2 = {};
+    const plugins = [1, 2, 3].map(() =>
+      ledger({ dialect: nodeSqliteDialect(raw2), cacheKey: key2, log: () => {} }),
+    );
+    await Promise.all(plugins.map((p) => p.ready()));
+    expect(count2()).toBe(single);
+  });
+});

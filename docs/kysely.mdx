@@ -24,6 +24,7 @@ Nothing else changes in your code. Set the actor with `runWithLedgerContext` as 
 | Option | Default | Description |
 | --- | --- | --- |
 | `dialect` | required | The dialect you pass to `new Kysely`. |
+| `cacheKey` | the `dialect` object | Identifies the database for the schema cache (see below). |
 | `auditTable` | `ledger_audit` | The table created by `sql/sqlite/audit.sql`. |
 | `log` | `console.info` | Receives the one startup line listing the soft-delete tables. |
 
@@ -36,6 +37,17 @@ At startup the plugin reads the schema through Kysely's introspection and logs t
 ```
 
 A table soft-deletes if and only if it has a `deleted_at` column. There is no allowlist and no exclude list. Add or drop the column to change a table's behavior. The column holds milliseconds since the Unix epoch, matching `softDeleteColumns` in the Drizzle adapter.
+
+## The schema read is cached per process
+
+The schema is read once per process (a Worker isolate) and shared by every plugin instance with the same cache key, so building a Kysely instance per request costs no schema query after the first. By default the key is the `dialect` object. A Worker that builds a dialect per request must pass something stable, or each request reads the schema again:
+
+```typescript
+const dialect = new D1Dialect({ database: env.DB });
+const db = new Kysely<Database>({ dialect, plugins: [ledger({ dialect, cacheKey: env.DB })] });
+```
+
+`cacheKey` can be any object (such as the D1 binding) or a string. `plugin.refresh()` re-reads the schema, and every instance on that key sees the result. The startup log line prints when a read runs, so it appears once per process, not once per instance.
 
 ## What each statement does
 

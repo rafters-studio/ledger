@@ -56,6 +56,13 @@ export interface LedgerKyselyOptions {
    * those writes never pass through the plugin itself.
    */
   dialect: Dialect;
+  /**
+   * Identifies the database for the schema cache. Plugin instances with the
+   * same key share one schema read for the life of the process. Default: the
+   * `dialect` object. A Worker that builds a dialect per request should pass
+   * something stable, such as the D1 binding (`env.DB`) or a string.
+   */
+  cacheKey?: object | string;
   /** Audit table created by `sql/sqlite/audit.sql`. Default `ledger_audit`. */
   auditTable?: string;
   /** Receives the startup log line. Default `console.info`. */
@@ -174,60 +181,85 @@ function withKeys<N extends InsertQueryNode | UpdateQueryNode | DeleteQueryNode>
   return { ...node, endModifiers: [clause, ...(node.endModifiers ?? [])] };
 }
 
+/**
+ * The schema read for one database. Shared by every plugin instance given the
+ * same cache key, so a Kysely instance per request reads the schema once per
+ * process (a Worker isolate), not once per request.
+ */
+interface SchemaCache {
+  tables: Map<string, TableInfo> | null;
+  loading: Promise<void> | null;
+  error: unknown;
+}
+
+const objectCaches = new WeakMap<object, SchemaCache>();
+const stringCaches = new Map<string, SchemaCache>();
+
+function cacheFor(key: object | string): SchemaCache {
+  const caches = typeof key === "string" ? stringCaches : objectCaches;
+  const existing = (caches as Map<object | string, SchemaCache>).get(key);
+  if (existing !== undefined) return existing;
+  const created: SchemaCache = { tables: null, loading: null, error: undefined };
+  (caches as Map<object | string, SchemaCache>).set(key, created);
+  return created;
+}
+
 export class LedgerKyselyPlugin implements KyselyPlugin {
   readonly #db: Kysely<Record<string, AuditRow>>;
   readonly #auditTable: string;
   readonly #log: (message: string) => void;
+  readonly #cache: SchemaCache;
   readonly #pending = new WeakMap<object, Pending>();
-  #tables: Map<string, TableInfo> | null = null;
-  #loading: Promise<void> | null = null;
-  #loadError: unknown;
 
   constructor(options: LedgerKyselyOptions) {
     this.#db = new Kysely<Record<string, AuditRow>>({ dialect: options.dialect });
     this.#auditTable = options.auditTable ?? "ledger_audit";
     this.#log = options.log ?? ((message) => console.info(message));
-    void this.refresh().catch(() => {});
+    this.#cache = cacheFor(options.cacheKey ?? options.dialect);
+    if (this.#cache.loading === null) void this.refresh().catch(() => {});
   }
 
   /** Resolves once the schema is read; rejects if it could not be. */
-  ready(): Promise<void> {
-    return this.#loading ?? this.refresh();
+  async ready(): Promise<void> {
+    await (this.#cache.loading ?? this.refresh());
+    this.#requireTables();
   }
 
-  /** Read the schema again, for tables created after startup (for example by a migration). */
+  /**
+   * Read the schema again, for tables created after startup (for example by a
+   * migration). Every plugin instance sharing this cache key sees the result.
+   */
   refresh(): Promise<void> {
+    const cache = this.#cache;
     const loading = this.#load().then(
-      () => {
-        this.#loadError = undefined;
+      (tables) => {
+        cache.tables = tables;
+        cache.error = undefined;
+        const names = this.softDeleteTables();
+        this.#log(`[ledger] soft-delete tables: ${names.length === 0 ? "none" : names.join(", ")}`);
       },
       (error: unknown) => {
-        this.#loadError = error;
+        cache.error = error;
         throw error;
       },
     );
-    this.#loading = loading;
+    cache.loading = loading;
     return loading;
   }
 
   /** Tables that soft-delete, as read from the schema. Empty until ready. */
   softDeleteTables(): string[] {
-    if (this.#tables === null) return [];
-    return [...this.#tables]
-      .filter(([, info]) => info.softDeletes)
+    if (this.#cache.tables === null) return [];
+    return [...this.#cache.tables]
+      .filter(([name, info]) => info.softDeletes && name !== this.#auditTable.toLowerCase())
       .map(([name]) => name)
       .sort();
   }
 
-  async #load(): Promise<void> {
+  async #load(): Promise<Map<string, TableInfo>> {
     const tables = await this.#db.introspection.getTables();
     const loaded = new Map<string, TableInfo>();
-    let auditFound = false;
     for (const table of tables) {
-      if (table.name === this.#auditTable) {
-        auditFound = true;
-        continue;
-      }
       if (table.isView) continue;
       const keys = await sql<{ name: string }>`
         select name from pragma_table_info(${table.name}) where pk > 0 order by pk
@@ -237,17 +269,19 @@ export class LedgerKyselyPlugin implements KyselyPlugin {
         softDeletes: table.columns.some((column) => column.name === DELETED_AT),
       });
     }
-    if (!auditFound) throw new LedgerAuditTableMissingError(this.#auditTable);
-    this.#tables = loaded;
-    const names = this.softDeleteTables();
-    this.#log(`[ledger] soft-delete tables: ${names.length === 0 ? "none" : names.join(", ")}`);
+    return loaded;
   }
 
   #requireTables(): Map<string, TableInfo> {
-    if (this.#tables !== null) return this.#tables;
-    const cause = this.#loadError;
-    if (cause !== undefined) void this.refresh().catch(() => {});
-    throw new LedgerNotReadyError(cause);
+    const { tables, error } = this.#cache;
+    if (tables === null) {
+      if (error !== undefined) void this.refresh().catch(() => {});
+      throw new LedgerNotReadyError(error);
+    }
+    if (!tables.has(this.#auditTable.toLowerCase())) {
+      throw new LedgerAuditTableMissingError(this.#auditTable);
+    }
+    return tables;
   }
 
   transformQuery({ node, queryId }: PluginTransformQueryArgs): RootOperationNode {
