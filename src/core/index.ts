@@ -14,6 +14,7 @@ export type {
   RestoreResult,
   SoftDeleteOptions,
   SoftDeleteResult,
+  ValueFreeAuditEntry,
 } from "./types.js";
 
 // Adapter interface

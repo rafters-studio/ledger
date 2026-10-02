@@ -94,6 +94,7 @@
         "default": "./dist/drizzle/soft-delete/mysql.cjs"
       }
     },
+    "./sql/sqlite/audit.sql": "./sql/sqlite/audit.sql",
     "./better-auth": {
       "import": {
         "types": "./dist/better-auth.d.ts",
@@ -107,6 +108,7 @@
   },
   "files": [
     "dist",
+    "sql",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

@@ -54,6 +54,36 @@ export interface AuditLogEntry {
 }
 
 /**
+ * Entry in the append-only, value-free audit table (`sql/sqlite/audit.sql`).
+ * Records which columns changed, never their values, so it has no `oldData`
+ * or `newData` and nothing in it needs purging.
+ */
+export interface ValueFreeAuditEntry {
+  /** UUIDv7 identifier for this entry */
+  id: string;
+  /** Name of the table that was modified */
+  tableName: string;
+  /** Primary key of the affected record */
+  recordId: string;
+  /** Type of operation performed */
+  action: "INSERT" | "UPDATE" | "SOFT_DELETE" | "DELETE";
+  /** Names of the columns that changed (column names only, no values) */
+  changedFields: string[];
+  /** User who performed the action */
+  userId: string | null;
+  /** IP address of the request */
+  ip: string | null;
+  /** User agent string */
+  userAgent: string | null;
+  /** API endpoint or action identifier */
+  endpoint: string | null;
+  /** Request ID for tracing */
+  requestId: string | null;
+  /** When the change occurred, in milliseconds since the Unix epoch */
+  createdAt: number;
+}
+
+/**
  * Configuration options for the ledger.
  */
 export interface LedgerConfig {

@@ -1,0 +1,55 @@
+# Value-Free Audit Table (SQLite / D1)
+
+`@rafters/ledger` ships one SQL file that creates an append-only audit table for SQLite, including Cloudflare D1. The table records who changed which row, when, and which columns changed. It stores no field values. With no values stored there is nothing to purge for GDPR, and the table never needs an UPDATE or DELETE.
+
+Rollback, stored values, encryption, read auditing, Postgres, and MySQL are not covered.
+
+---
+
+## Where the SQL lives
+
+The file is `sql/sqlite/audit.sql` in the package, exported as `@rafters/ledger/sql/sqlite/audit.sql`. It creates the `ledger_audit` table, three indexes, and the triggers that make it append-only. Every statement is `IF NOT EXISTS`, so applying it twice is harmless.
+
+## Copy it into your migrations
+
+On D1, create a migration and paste the file's contents into it:
+
+```sh
+wrangler d1 migrations create <db-name> add-ledger-audit
+cp node_modules/@rafters/ledger/sql/sqlite/audit.sql migrations/<generated-file>.sql
+wrangler d1 migrations apply <db-name> --local
+```
+
+On plain SQLite:
+
+```sh
+sqlite3 app.db < node_modules/@rafters/ledger/sql/sqlite/audit.sql
+```
+
+Copy the file rather than referencing it, so your migration history stays the record of what your database ran.
+
+## Columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | TEXT, primary key | UUIDv7 |
+| `table_name` | TEXT | The modified table |
+| `record_id` | TEXT | Primary key of the affected row |
+| `action` | TEXT | `INSERT`, `UPDATE`, `SOFT_DELETE`, or `DELETE` (enforced by a CHECK) |
+| `changed_fields` | TEXT | JSON array of column names, default `[]` (enforced by a CHECK) |
+| `user_id` | TEXT | From ledger context; null otherwise |
+| `ip` | TEXT | From ledger context |
+| `user_agent` | TEXT | From ledger context |
+| `endpoint` | TEXT | From ledger context |
+| `request_id` | TEXT | From ledger context |
+| `created_at` | INTEGER | Milliseconds since the Unix epoch |
+
+The `ValueFreeAuditEntry` type (exported from `@rafters/ledger`) describes one entry. It has no `oldData` or `newData`.
+
+## Append-only, with no bypass
+
+Triggers abort every UPDATE and every DELETE on `ledger_audit` with `RAISE(ABORT, ...)`. No flag, setting, or exception path turns them off. A third trigger aborts an `INSERT OR REPLACE` that would overwrite an existing id, because SQLite deletes the old row in that case without firing the DELETE trigger.
+
+Anyone with schema access can still `DROP TRIGGER` or `DROP TABLE`. The triggers protect against application code and ad hoc statements, not against someone who owns the schema.
+
+This table is separate from the Drizzle `audit_log` table, which stores values and allows the GDPR purge. They can coexist.
