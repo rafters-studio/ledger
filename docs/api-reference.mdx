@@ -6,7 +6,7 @@
 |---|---|
 | `@rafters/ledger` | Core: context, pure soft-delete helpers, pure audit entry construction, GDPR utilities, types |
 | `@rafters/ledger/drizzle` | Drizzle adapter: schema, `createAuditedDb`, query filters, manual log functions, `AuditLogger` |
-| `@rafters/ledger/better-auth` | better-auth 1.7+ integration: `ledgerPlugin`, `createDeleteAuditCallback` |
+| `@rafters/ledger/better-auth` | better-auth 1.7+ integration: `ledgerPlugin`, `createDeleteAuditCallback` (deprecated) |
 | `@rafters/ledger/kysely` | Kysely plugin for SQLite and D1: `ledger`, `LedgerKyselyPlugin`, error classes |
 
 Dialect-specific column definitions live at sub-subpaths of the Drizzle adapter:
@@ -590,7 +590,7 @@ Integration with [better-auth](https://www.better-auth.com/) 1.7 and later. The 
 
 ### `ledgerPlugin(config?): BetterAuthPlugin`
 
-Returns a better-auth plugin that registers `databaseHooks` for create and update on the configured tables. With `softDeleteUser: true` it also registers `user.delete.before`, which sets `deletedAt` (and `deletedBy` when declared) through better-auth's adapter, writes a SOFT_DELETE entry, and returns `false` so better-auth skips the row delete. Throws at init if the user schema has no `deletedAt` field.
+Returns a better-auth plugin that registers `databaseHooks` for create, update, and delete on the configured tables; each hard delete writes a DELETE entry with the redacted row as `oldData`. With `softDeleteUser: true` it also registers `user.delete.before`, which sets `deletedAt` (and `deletedBy` when declared) through better-auth's adapter, writes a SOFT_DELETE entry, and returns `false` so better-auth skips the row delete. Throws at init if the user schema has no `deletedAt` field.
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -600,7 +600,9 @@ Returns a better-auth plugin that registers `databaseHooks` for create and updat
 
 ### `createDeleteAuditCallback(writeAuditEntry): (user, request?) => Promise<void>`
 
-Returns an `afterDelete` callback that logs a DELETE audit entry without interfering with the delete. Use this when you want audit trail for hard deletes. Do not combine it with `softDeleteUser`: `afterDelete` still runs after a soft delete.
+Deprecated: `ledgerPlugin` audits a hard user delete itself through `databaseHooks.user.delete.after`; using both writes two DELETE entries for one delete.
+
+Returns an `afterDelete` callback that logs a DELETE audit entry without interfering with the delete. Do not combine it with `softDeleteUser`: `afterDelete` still runs after a soft delete.
 
 | Param | Type | Description |
 |-------|------|-------------|

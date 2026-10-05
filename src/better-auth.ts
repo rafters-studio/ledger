@@ -85,7 +85,9 @@ export interface LedgerPluginConfig {
    */
   writeAuditEntry?: (entry: LedgerAuditEntry) => Promise<void>;
   /**
-   * Tables to audit. Defaults to ['user'].
+   * Tables to audit. Defaults to ['user']. Each audited table gets an
+   * INSERT entry on create, an UPDATE entry on update, and a DELETE entry
+   * (oldData = the deleted row, redacted) on every hard delete.
    *
    * WARNING: 'account' rows carry OAuth accessToken/refreshToken/idToken
    * and credential password hashes. Redaction strips those fields before
@@ -94,7 +96,8 @@ export interface LedgerPluginConfig {
    * 'verification' rows carry OTP codes and reset tokens in the
    * 'value' column. Redaction strips that column by table rule, so
    * auditing verification is safe, but it stays opt-in. Session is
-   * excluded by default due to high volume.
+   * excluded by default due to high volume: every sign-in, refresh,
+   * sign-out, and revocation writes an entry once it is listed.
    */
   auditTables?: ("user" | "account" | "session" | "verification")[];
   /**
@@ -138,7 +141,8 @@ type UserWithId = { id: string } & Record<string, unknown>;
  * Better Auth plugin for audit logging.
  *
  * Features:
- * - Audit logging for user and account create/update operations via databaseHooks
+ * - Audit logging for create, update, and delete on every table in
+ *   auditTables via databaseHooks (INSERT, UPDATE, DELETE entries)
  * - Optional user soft delete (softDeleteUser) via databaseHooks.user.delete.before
  *
  * ATTRIBUTION REQUIRES CONTEXT: entries attribute to the authenticated
@@ -286,6 +290,35 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
           });
         },
       },
+      // delete.after, not delete.before: a before hook can be vetoed by a
+      // later hook (or by softDeleteUser's own veto), and a vetoed delete
+      // fires no after hook, so after records only deletes that ran.
+      // better-auth 1.7 routes every delete through these hooks:
+      // - deleteWithHooks (unlinkAccount, revokeSession, a hard user delete):
+      //   one call, the row as read before the delete.
+      // - deleteManyWithHooks (deleteUser's sessions and accounts,
+      //   revokeSessions, sign-out of all sessions): one call PER ROW, each
+      //   with that row from a findMany snapshot taken before the delete --
+      //   never once with the where clause. A veto from any row's before
+      //   hook aborts the whole batch.
+      // - consumeOneWithHooks (verification tokens): one call with the row
+      //   the atomic consume returned.
+      // queueAfterTransactionHook defers the call past the transaction; it
+      // stays in the request's async context, so the actor resolves.
+      delete: {
+        after: async (data: UserWithId) => {
+          await audit({
+            tableName: table,
+            recordId: data.id,
+            action: "DELETE",
+            oldData: data as Record<string, unknown>,
+            newData: null,
+            // Matches the soft-delete path: self-service deletion is the
+            // common flow, so a deleted user is the fallback actor.
+            userId: resolveActor(table === "user" ? data.id : null),
+          });
+        },
+      },
     };
   }
 
@@ -340,7 +373,10 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
         options: {
           databaseHooks: {
             ...databaseHooks,
-            user: { ...databaseHooks["user"], delete: { before: softDeleteUserHook(ctx) } },
+            user: {
+              ...databaseHooks["user"],
+              delete: { ...databaseHooks["user"]?.delete, before: softDeleteUserHook(ctx) },
+            },
           },
         },
       };
@@ -350,6 +386,12 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
 
 /**
  * Creates a simple audit-only callback for afterDelete.
+ *
+ * @deprecated ledgerPlugin records a hard user delete itself through
+ * databaseHooks.user.delete.after whenever 'user' is in auditTables (the
+ * default). Using this callback alongside it writes two DELETE entries for
+ * one delete. Kept only for setups that audit user deletes without the
+ * plugin; it will be removed in a future major.
  *
  * Logs the delete without preventing it (hard delete with audit trail).
  * Do not combine with softDeleteUser: afterDelete still runs after a

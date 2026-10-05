@@ -1,6 +1,6 @@
 # better-auth Integration
 
-`@rafters/ledger/better-auth` wires audit logging and user soft delete into [better-auth](https://better-auth.com) 1.7 and later: `ledgerPlugin` for create/update audit hooks and, with `softDeleteUser: true`, soft delete of the user row; `createDeleteAuditCallback` for a hard-delete audit trail.
+`@rafters/ledger/better-auth` wires audit logging and user soft delete into [better-auth](https://better-auth.com) 1.7 and later: `ledgerPlugin` for create, update, and delete audit hooks and, with `softDeleteUser: true`, soft delete of the user row. `createDeleteAuditCallback` is deprecated: the plugin audits hard deletes itself.
 
 ---
 
@@ -10,13 +10,13 @@
 import { ledgerPlugin, createDeleteAuditCallback } from "@rafters/ledger/better-auth";
 ```
 
-The peer range is `better-auth >=1.7.0 <2.0.0`. 1.7 added `databaseHooks.<model>.delete.before`, which the soft delete is built on.
+The peer range is `better-auth >=1.7.0 <2.0.0`. 1.7 added `databaseHooks.<model>.delete.before` and `delete.after`, which the soft delete and the delete audit are built on.
 
 ---
 
 ## `ledgerPlugin`
 
-Registers `databaseHooks` inside better-auth for the `create.after` and `update.after` lifecycle events on audited tables. Each event fires `writeAuditEntry` as fire-and-forget: errors are logged via `console.error` and never rethrow into the auth flow.
+Registers `databaseHooks` inside better-auth for the `create.after`, `update.after`, and `delete.after` lifecycle events on audited tables. Each event fires `writeAuditEntry` as fire-and-forget: errors are logged via `console.error` and never rethrow into the auth flow.
 
 ```typescript
 import { betterAuth } from "better-auth";
@@ -61,7 +61,7 @@ export function buildAuth(env: Env) {
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user"]` | Tables to hook for create/update events. Session is excluded by default due to volume. Verification is opt-in: its `value` column holds OTP codes and reset tokens, which redaction strips by table rule. |
+| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user"]` | Tables to hook for create, update, and delete events. Session is excluded by default due to volume: once listed, every sign-in, refresh, sign-out, and revocation writes an entry. Verification is opt-in: its `value` column holds OTP codes and reset tokens, which redaction strips by table rule. |
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | `undefined` | Called for each auditable event. If omitted, audit logging is disabled. |
 | `softDeleteUser` | `boolean` | `false` | Soft-delete the user row instead of deleting it. See [Soft delete](#soft-delete-softdeleteuser). |
 | `redactPatterns` | `readonly string[]` | `undefined` | Extra key patterns to redact. Redaction itself is always on. |
@@ -103,11 +103,19 @@ Substring matching over-redacts on purpose: `code` also strips `postalCode` and 
 | `tableName` | `string` | The table that changed (`"user"`, `"account"`, etc.) |
 | `recordId` | `string` | Primary key of the affected row |
 | `action` | `"INSERT" \| "UPDATE" \| "SOFT_DELETE" \| "DELETE"` | The operation |
-| `oldData` | `Record<string, unknown> \| null` | Row state before the change; `null` for `INSERT` |
+| `oldData` | `Record<string, unknown> \| null` | Row state before the change; `null` for `INSERT`. On `DELETE`, the deleted row, redacted. |
 | `newData` | `Record<string, unknown> \| null` | Row state after the change; `null` for `DELETE` or `SOFT_DELETE` |
 | `userId` | `string \| null` | For `user` table events, this is the user's own ID. For `account` events, it is `null`. |
 
 Note: better-auth's `update.after` hook does not expose the previous row state, so `oldData` is always `null` on `UPDATE` entries from this plugin.
+
+### Delete entries
+
+Every hard delete of a row in an audited table writes one `DELETE` entry from `delete.after`, with `oldData` set to the row better-auth read before deleting it and `newData` set to `null`. Covered: unlinking an account, revoking a session or signing out (with `session` listed), the user's sessions and accounts that `deleteUser` removes, and the user row itself when `softDeleteUser` is off. `delete.after` never fires for a delete a `delete.before` hook vetoed, so a soft-deleted user gets a `SOFT_DELETE` entry and no `DELETE`.
+
+Bulk deletes (better-auth's `deleteManyWithHooks`, used by `deleteUser`, `revokeSessions`, and sign-out of every session) call the hook once per row, each with that row from a snapshot read before the delete. They never call it once with the where clause, so a bulk delete of three accounts writes three entries, each with its own `recordId`. Verification tokens consumed on use (`consumeOneWithHooks`) write one entry with the consumed row.
+
+The actor is the ledger context's `userId`. For a `user` row with no context, it falls back to the deleted user's own id, the same as `SOFT_DELETE`.
 
 ---
 
@@ -147,7 +155,7 @@ export const auth = betterAuth({
 better-auth's `internalAdapter.deleteUser` deletes the user's session rows and **account rows** before it reaches the user row. The `delete.before` veto applies to the user row only, so:
 
 - Sessions are revoked, which is what a deletion needs.
-- Credential accounts (password hashes) and OAuth accounts (tokens, provider links) are **hard-deleted**. Restoring a soft-deleted user means a password reset or a fresh OAuth link; the old credentials are gone.
+- Credential accounts (password hashes) and OAuth accounts (tokens, provider links) are **hard-deleted**. With `account` in `auditTables`, each one writes a redacted `DELETE` entry. Restoring a soft-deleted user means a password reset or a fresh OAuth link; the old credentials are gone.
 - The user row, with its email, survives.
 
 ### Gate sign-in on `deletedAt`
@@ -177,7 +185,9 @@ better-auth runs plugin `databaseHooks` before the ones in your own config. Once
 
 ---
 
-## `createDeleteAuditCallback`
+## `createDeleteAuditCallback` (deprecated)
+
+Deprecated: `ledgerPlugin` with `user` in `auditTables` (the default) already writes a `DELETE` entry for a hard user delete from `databaseHooks.user.delete.after`. Using this callback alongside the plugin writes two `DELETE` entries for one delete. It stays only for setups that audit user deletes without the plugin, and will be removed in a future major.
 
 For cases where you want hard delete (the user row is permanently removed) but still need an audit trail. This goes in `afterDelete`, not `beforeDelete`. It logs a `DELETE` entry and returns normally without throwing.
 
