@@ -605,14 +605,74 @@ describe("createAuditedDb soft-delete audit entries (real SQLite)", () => {
     expect(result).toEqual([{ id: "u1" }]);
   });
 
-  test("run() discards the returned keys and writes one statement-level entry", async () => {
+  test("run() records the affected row ids and resolves to the rows", async () => {
     const { audited, entries, deletedIds } = auditedSqlite();
 
-    await audited.delete(users).where(eq(users.id, "u1")).run();
+    const result = await audited.delete(users).where(eq(users.id, "u1")).run();
     await settled();
 
     expect(deletedIds()).toEqual(["u1"]);
-    expect(entries.map((e) => e.recordId)).toEqual(["unknown"]);
+    expect(result).toEqual([{ id: "u1" }]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1"]);
+  });
+
+  test("run() matching no rows writes no entry", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    await audited.delete(users).where(eq(users.id, "nobody")).run();
+    await settled();
+
+    expect(deletedIds()).toEqual([]);
+    expect(entries).toHaveLength(0);
+  });
+
+  test("a result naming no rows writes nothing when the driver reports zero affected", async () => {
+    const executeWith = async (result: unknown) => {
+      const entries: AuditLogEntry[] = [];
+      const db = {
+        update: () => ({
+          set: () => ({ returning: () => ({ execute: () => Promise.resolve(result) }) }),
+        }),
+      };
+      const audited = createAuditedDb(db, {
+        softDeleteTables: ["users"],
+        writeAuditEntry: (entry) => {
+          entries.push(entry);
+          return Promise.resolve();
+        },
+      });
+      await audited.delete(users).execute();
+      await settled();
+      return entries.map((e) => e.recordId);
+    };
+
+    expect(await executeWith({ changes: 0 })).toEqual([]);
+    expect(await executeWith({ meta: { changes: 0 } })).toEqual([]);
+    expect(await executeWith({ rowsAffected: 2 })).toEqual(["unknown"]);
+    expect(await executeWith(undefined)).toEqual(["unknown"]);
+  });
+
+  test("values() records the affected row ids and hides the added keys", async () => {
+    const keysOnly = auditedSqlite();
+    const keyRows = await keysOnly.audited.delete(users).where(eq(users.id, "u1")).values();
+    await settled();
+    expect(keyRows).toEqual([["u1"]]);
+    expect(keysOnly.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const selected = auditedSqlite();
+    const nameRows = await selected.audited
+      .delete(users)
+      .where(eq(users.id, "u2"))
+      .returning({ name: users.name })
+      .values();
+    await settled();
+    expect(nameRows).toEqual([["Bo"]]);
+    expect(selected.entries.map((e) => e.recordId)).toEqual(["u2"]);
+
+    const none = auditedSqlite();
+    await none.audited.delete(users).where(eq(users.id, "nobody")).values();
+    await settled();
+    expect(none.entries).toHaveLength(0);
   });
 
   test("batch members record their own row ids", async () => {

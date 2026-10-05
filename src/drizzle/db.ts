@@ -20,8 +20,9 @@
  *   UPDATE runs with RETURNING the primary key, so a statement without
  *   a caller returning() resolves to the affected keys instead of the
  *   driver's run result. On MySQL the keys are selected before the
- *   UPDATE, which is not atomic. run() and values() discard the keys
- *   and write one statement-level entry with recordId "unknown".
+ *   UPDATE, which is not atomic. run() executes through all() and
+ *   resolves to the rows, as an await does; values() reads the keys
+ *   from its row arrays.
  */
 
 import { createAuditEntry } from "../core/audit.js";
@@ -195,6 +196,24 @@ function recordIdOf(values: readonly unknown[]): string {
   return JSON.stringify(values.map((value) => String(value)));
 }
 
+/**
+ * The affected-row count a driver's run result reports (better-sqlite3
+ * `changes`, libsql `rowsAffected`, node-postgres `rowCount`, D1
+ * `meta.changes`), or undefined when it reports none.
+ */
+function affectedRowCount(result: unknown): number | undefined {
+  if (!isRow(result)) return undefined;
+  const meta = result.meta;
+  const candidates = [
+    result.changes,
+    result.rowsAffected,
+    result.rowCount,
+    isRow(meta) ? meta.changes : undefined,
+  ];
+  const count = candidates.find((value) => typeof value === "number");
+  return typeof count === "number" ? count : undefined;
+}
+
 /** Execution methods on Drizzle builders and prepared queries. */
 const EXECUTION_METHODS = new Set(["execute", "all", "run", "values"]);
 
@@ -271,22 +290,24 @@ function observeExecution<T extends object>(
 
       const method = value as (...a: unknown[]) => unknown;
 
-      if (typeof prop === "string" && EXECUTION_METHODS.has(prop)) {
-        return (...args: unknown[]) => run(() => method.apply(target, args));
-      }
-
-      // get() returns only the first row, so ids read from it would
-      // undercount a multi-row delete: execute through all() and hand
-      // the caller the first row.
-      if (prop === "get") {
+      // get() returns only the first row and run() discards the rows,
+      // so ids read from either would be wrong: execute through all().
+      // get() hands the caller the first row; run() hands it the rows,
+      // as an await does.
+      if (prop === "get" || prop === "run") {
         const all: unknown = Reflect.get(target, "all", receiver);
         if (typeof all === "function") {
           return (...args: unknown[]) => {
             const rows = run(() => all.apply(target, args));
+            if (prop === "run") return rows;
             const first = (r: unknown) => (Array.isArray(r) ? r[0] : r);
             return isPromiseLike(rows) ? Promise.resolve(rows).then(first) : first(rows);
           };
         }
+      }
+
+      if (typeof prop === "string" && EXECUTION_METHODS.has(prop)) {
+        return (...args: unknown[]) => run(() => method.apply(target, args));
       }
 
       if (prop === "returning" && hooks.returning) {
@@ -464,13 +485,22 @@ export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig
       return { ...(isRow(base) ? base : {}), ...aliased };
     };
 
-    // Only a rows array tells which rows changed: an empty one means
-    // nothing matched, so nothing is written. run() and values() discard
-    // the returned keys; those executions write one statement-level
-    // entry with recordId "unknown" rather than drop the audit.
+    // A rows array tells which rows changed: an empty one means nothing
+    // matched, so nothing is written. values() returns each row as an
+    // array in selection order, where the key columns come last (the
+    // whole selection, or the aliases appended to a caller's own).
+    // Any other result names no rows: it writes one statement-level
+    // entry with recordId "unknown" unless the driver reports zero
+    // affected rows.
     const settle = (result: unknown) => {
+      if (Array.isArray(result) && result.every(Array.isArray)) {
+        const keyStart = (row: unknown[]) => row.length - keys.length;
+        writeEntries(result.map((row: unknown[]) => recordIdOf(row.slice(keyStart(row)))));
+        if (!stripAliases) return result;
+        return result.map((row: unknown[]) => row.slice(0, keyStart(row)));
+      }
       if (!Array.isArray(result) || !result.every(isRow)) {
-        writeEntries(["unknown"]);
+        if (affectedRowCount(result) !== 0) writeEntries(["unknown"]);
         return result;
       }
       writeEntries(result.map((row) => recordIdOf(idKeys.map((key) => row[key]))));
