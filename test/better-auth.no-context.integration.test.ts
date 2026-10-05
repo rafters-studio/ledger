@@ -1,10 +1,11 @@
 /**
  * better-auth integration without ledger context (#46).
  *
- * The runtime has no AsyncLocalStorage global, the way a Cloudflare Worker
- * without nodejs_compat runs ledger, and requests reach auth.handler with no
- * runWithLedgerContext middleware. Attribution must come from the hook
- * context better-auth hands every databaseHook.
+ * Ledger's context storage is unavailable (no AsyncLocalStorage global), and
+ * requests reach auth.handler with no runWithLedgerContext middleware.
+ * better-auth keeps its own endpoint context (it imports node:async_hooks
+ * itself), and attribution must come from the hook context it hands every
+ * databaseHook.
  */
 
 import { DatabaseSync } from "node:sqlite";

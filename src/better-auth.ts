@@ -222,18 +222,19 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
    * row's id, which recorded an admin banning a user as the user acting
    * on themselves.
    *
-   * Which hooks carry a session (better-auth 1.7, src/db/with-hooks.ts
-   * passes tryGetCurrentAuthEndpointContext() to every create, update,
-   * and delete hook): the session is set by the endpoint's session
-   * middleware (sessionMiddleware, sensitiveSessionMiddleware,
-   * freshSessionMiddleware, the admin plugin's adminMiddleware), so
-   * update and delete hooks from an authenticated route carry it --
-   * updateUser, admin updateUser/setRole/banUser, unlinkAccount,
-   * revokeSession(s), deleteUser. create.after on user during sign-up
-   * does not: sign-up runs no session middleware and the new session is
-   * created after the user. Sign-in, OAuth callbacks, and verification
-   * consumes carry none either. ctx is null when internalAdapter is
-   * called outside an endpoint.
+   * Which hooks carry a session (read from better-auth 1.7.7 source;
+   * db/with-hooks passes tryGetCurrentAuthEndpointContext() to every
+   * create, update, and delete hook): ctx.context.session is set by
+   * getSessionFromCtx, which the session middlewares (sessionMiddleware,
+   * sensitiveSessionMiddleware, freshSessionMiddleware, the admin
+   * plugin's adminMiddleware) and some route bodies call. So update and
+   * delete hooks from an authenticated route carry it: updateUser,
+   * admin updateUser/setRole/banUser, unlinkAccount, revokeSession(s),
+   * deleteUser, and verify-email when the caller is signed in.
+   * create.after on user during sign-up does not: sign-up and sign-in
+   * run only formCsrfMiddleware and never read the session, and the new
+   * session is created after the user. ctx is undefined when
+   * internalAdapter is called outside an endpoint.
    */
   function resolveActor(ctx: HookContext, fallback: string | null = null): string | null {
     return ctx?.context?.session?.user?.id ?? getLedgerContext()?.userId ?? fallback;
