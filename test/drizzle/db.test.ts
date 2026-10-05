@@ -1,4 +1,7 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { eq, sql } from "drizzle-orm";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { describe, expect, test, vi } from "vitest";
 import {
   type AuditedDbConfig,
@@ -9,6 +12,7 @@ import {
 import { createLedgerContext, runWithLedgerContext } from "../../src/core/context.js";
 import {
   AuditTableDeleteError,
+  MissingPrimaryKeyError,
   MissingSoftDeleteColumnError,
   MissingSoftDeleteTablesError,
   UnresolvedSoftDeleteTableError,
@@ -358,45 +362,13 @@ describe("createAuditedDb", () => {
     expect(deleteSpy).not.toHaveBeenCalled();
   });
 
-  test("writes a SOFT_DELETE audit entry once per executed statement", async () => {
-    const entries: AuditLogEntry[] = [];
-    const chain = {
-      where: vi.fn(() => chain),
-      returning: vi.fn(() => chain),
-      // oxlint-disable-next-line no-thenable -- intentionally thenable mock
-      then: (onFulfilled?: (v: unknown) => unknown) =>
-        Promise.resolve([{ id: "u1" }]).then((v) => (onFulfilled ? onFulfilled(v) : v)),
-    };
-    const db = {
-      delete: vi.fn(),
-      update: vi.fn(() => ({ set: vi.fn(() => chain) })),
-    };
-
-    const auditedDb = createAuditedDb(db, {
-      softDeleteTables: ["users"],
-      writeAuditEntry: (entry) => {
-        entries.push(entry);
-        return Promise.resolve();
-      },
-    });
-
-    await auditedDb.delete(usersWithSoftDelete).where({ id: "u1" }).returning();
-    // Allow the fire-and-forget audit write to settle.
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0].action).toBe("SOFT_DELETE");
-    expect(entries[0].tableName).toBe("users");
-    expect(entries[0].recordId).toBe("unknown");
-    expect(entries[0].newData?.deletedAt).toBeInstanceOf(Date);
-  });
-
   test("catch-swallowed rejection never writes a false SOFT_DELETE entry", async () => {
     const entries: unknown[] = [];
     // Mirrors Drizzle's QueryPromise: catch delegates to this.then on
     // the raw builder, and execute() rejects.
     const chain: Record<string, unknown> = {};
     chain.where = vi.fn(() => chain);
+    chain.returning = vi.fn(() => chain);
     // oxlint-disable-next-line no-thenable -- intentionally thenable mock
     chain.then = function (
       this: unknown,
@@ -436,36 +408,6 @@ describe("createAuditedDb", () => {
     expect(entries).toHaveLength(0);
   });
 
-  test("batch-executed soft-deletes fire their audit entries", async () => {
-    const entries: { action: string }[] = [];
-    const chain: Record<string, unknown> = { kind: "statement" };
-    chain.where = vi.fn(() => chain);
-    const batchSpy = vi.fn().mockResolvedValue(["ok"]);
-    const db = {
-      delete: vi.fn(),
-      update: vi.fn(() => ({ set: vi.fn(() => chain) })),
-      batch: batchSpy,
-    };
-
-    const auditedDb = createAuditedDb(db, {
-      softDeleteTables: ["users"],
-      writeAuditEntry: (entry) => {
-        entries.push(entry);
-        return Promise.resolve();
-      },
-    });
-
-    const stmt = auditedDb.delete(usersWithSoftDelete).where({ id: "u1" });
-    const result = await auditedDb.batch([stmt]);
-
-    expect(result).toEqual(["ok"]);
-    expect(batchSpy).toHaveBeenCalledTimes(1);
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0].action).toBe("SOFT_DELETE");
-  });
-
   test("allowlist mode throws on an unresolvable table name instead of hard-deleting", () => {
     const { db, deleteSpy } = createMockDb();
 
@@ -482,6 +424,7 @@ describe("createAuditedDb", () => {
     const entries: AuditLogEntry[] = [];
     const chain = {
       where: vi.fn(() => chain),
+      returning: vi.fn(() => chain),
       // oxlint-disable-next-line no-thenable -- intentionally thenable mock
       then: (onFulfilled?: (v: unknown) => unknown) =>
         Promise.resolve(undefined).then((v) => (onFulfilled ? onFulfilled(v) : v)),
@@ -502,6 +445,384 @@ describe("createAuditedDb", () => {
     // Built but never awaited/executed
     auditedDb.delete(usersWithSoftDelete).where({ id: "u1" });
     await new Promise((r) => setTimeout(r, 0));
+
+    expect(entries).toHaveLength(0);
+  });
+});
+
+// Drizzle's sqlite-proxy driver over node:sqlite: real Drizzle builders
+// executing real SQL, so the audit path is exercised end to end.
+type ProxyMethod = "run" | "all" | "values" | "get";
+
+function createSqliteDb() {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT, deleted_at INTEGER, deleted_by TEXT);
+    CREATE TABLE memberships (
+      org_id TEXT NOT NULL, user_id TEXT NOT NULL, deleted_at INTEGER, deleted_by TEXT,
+      PRIMARY KEY (org_id, user_id)
+    );
+    CREATE TABLE notes (body TEXT, deleted_at INTEGER, deleted_by TEXT);
+  `);
+  const query = (sqlText: string, params: unknown[], method: ProxyMethod) => {
+    const statement = raw.prepare(sqlText);
+    const args = params as SQLInputValue[];
+    if (method === "run") {
+      statement.run(...args);
+      return { rows: [] };
+    }
+    statement.setReturnArrays(true);
+    const rows = statement.all(...args) as unknown[];
+    return { rows: method === "get" ? rows[0] : rows };
+  };
+  const db = drizzle(
+    async (sqlText, params, method) => query(sqlText, params, method),
+    async (queries) => queries.map((q) => query(q.sql, q.params, q.method)),
+  );
+  return { raw, db };
+}
+
+const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  name: text("name"),
+  deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  deletedBy: text("deleted_by"),
+});
+
+const memberships = sqliteTable(
+  "memberships",
+  {
+    orgId: text("org_id").notNull(),
+    userId: text("user_id").notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    deletedBy: text("deleted_by"),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.userId] })],
+);
+
+const notes = sqliteTable("notes", {
+  body: text("body"),
+  deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  deletedBy: text("deleted_by"),
+});
+
+function auditedSqlite() {
+  const { raw, db } = createSqliteDb();
+  raw.exec(`INSERT INTO users (id, name) VALUES ('u1', 'Ada'), ('u2', 'Bo'), ('u3', 'Cy')`);
+  const entries: AuditLogEntry[] = [];
+  const audited = createAuditedDb(db, {
+    softDeleteTables: ["users", "memberships", "notes"],
+    writeAuditEntry: (entry) => {
+      entries.push(entry);
+      return Promise.resolve();
+    },
+  });
+  const deletedIds = () =>
+    raw
+      .prepare("SELECT id FROM users WHERE deleted_at IS NOT NULL ORDER BY id")
+      .all()
+      .map((row) => row.id);
+  return { raw, audited, entries, deletedIds };
+}
+
+// Let the fire-and-forget audit writes settle.
+const settled = () => new Promise((r) => setTimeout(r, 0));
+
+describe("createAuditedDb soft-delete audit entries (real SQLite)", () => {
+  test("a delete by id writes one SOFT_DELETE entry carrying that id", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    await audited.delete(users).where(eq(users.id, "u2"));
+    await settled();
+
+    expect(deletedIds()).toEqual(["u2"]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].action).toBe("SOFT_DELETE");
+    expect(entries[0].tableName).toBe("users");
+    expect(entries[0].recordId).toBe("u2");
+    expect(entries[0].newData?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  test("a delete matching no rows writes no entry", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    await audited.delete(users).where(eq(users.id, "nobody"));
+    await settled();
+
+    expect(deletedIds()).toEqual([]);
+    expect(entries).toHaveLength(0);
+  });
+
+  test("a multi-row delete writes one entry per affected row", async () => {
+    const { audited, entries } = auditedSqlite();
+
+    await audited.delete(users);
+    await settled();
+
+    expect(entries.map((e) => e.recordId).sort()).toEqual(["u1", "u2", "u3"]);
+  });
+
+  test("execute(), all() and get() record every affected row", async () => {
+    const executed = auditedSqlite();
+    await executed.audited.delete(users).where(eq(users.id, "u1")).execute();
+    await settled();
+    expect(executed.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const listed = auditedSqlite();
+    await listed.audited.delete(users).where(eq(users.id, "u3")).all();
+    await settled();
+    expect(listed.entries.map((e) => e.recordId)).toEqual(["u3"]);
+
+    const first = auditedSqlite();
+    const row = await first.audited.delete(users).get();
+    await settled();
+    expect(row).toEqual({ id: expect.any(String) });
+    expect(first.entries.map((e) => e.recordId).sort()).toEqual(["u1", "u2", "u3"]);
+  });
+
+  test("the caller's returning() rows come back unchanged", async () => {
+    const full = auditedSqlite();
+    const rows = await full.audited.delete(users).where(eq(users.id, "u1")).returning();
+    await settled();
+    expect(rows).toEqual([{ id: "u1", name: "Ada", deletedAt: expect.any(Date), deletedBy: null }]);
+    expect(full.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const partial = auditedSqlite();
+    const names = await partial.audited
+      .delete(users)
+      .where(eq(users.id, "u2"))
+      .returning({ name: users.name });
+    await settled();
+    expect(names).toEqual([{ name: "Bo" }]);
+    expect(partial.entries.map((e) => e.recordId)).toEqual(["u2"]);
+  });
+
+  test("finally() records the affected row ids and hides the added keys", async () => {
+    const plain = auditedSqlite();
+    let ran = 0;
+    const keyRows = await plain.audited
+      .delete(users)
+      .where(eq(users.id, "u1"))
+      .finally(() => {
+        ran += 1;
+      });
+    await settled();
+    expect(ran).toBe(1);
+    expect(plain.deletedIds()).toEqual(["u1"]);
+    expect(keyRows).toEqual([{ id: "u1" }]);
+    expect(plain.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const selected = auditedSqlite();
+    const names = await selected.audited
+      .delete(users)
+      .where(eq(users.id, "u2"))
+      .returning({ name: users.name })
+      .finally(() => {});
+    await settled();
+    expect(names).toEqual([{ name: "Bo" }]);
+    expect(selected.entries.map((e) => e.recordId)).toEqual(["u2"]);
+  });
+
+  test("without a caller returning(), the delete resolves to the affected keys", async () => {
+    const { audited } = auditedSqlite();
+
+    const result = await audited.delete(users).where(eq(users.id, "u1"));
+
+    expect(result).toEqual([{ id: "u1" }]);
+  });
+
+  test("run() records the affected row ids and resolves to the rows", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    const result = await audited.delete(users).where(eq(users.id, "u1")).run();
+    await settled();
+
+    expect(deletedIds()).toEqual(["u1"]);
+    expect(result).toEqual([{ id: "u1" }]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1"]);
+  });
+
+  test("run() matching no rows writes no entry", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    await audited.delete(users).where(eq(users.id, "nobody")).run();
+    await settled();
+
+    expect(deletedIds()).toEqual([]);
+    expect(entries).toHaveLength(0);
+  });
+
+  test("a result naming no rows writes nothing when the driver reports zero affected", async () => {
+    const executeWith = async (result: unknown) => {
+      const entries: AuditLogEntry[] = [];
+      const db = {
+        update: () => ({
+          set: () => ({ returning: () => ({ execute: () => Promise.resolve(result) }) }),
+        }),
+      };
+      const audited = createAuditedDb(db, {
+        softDeleteTables: ["users"],
+        writeAuditEntry: (entry) => {
+          entries.push(entry);
+          return Promise.resolve();
+        },
+      });
+      await audited.delete(users).execute();
+      await settled();
+      return entries.map((e) => e.recordId);
+    };
+
+    expect(await executeWith({ changes: 0 })).toEqual([]);
+    expect(await executeWith({ meta: { changes: 0 } })).toEqual([]);
+    expect(await executeWith({ rowsAffected: 2 })).toEqual(["unknown"]);
+    expect(await executeWith(undefined)).toEqual(["unknown"]);
+  });
+
+  test("values() records the affected row ids and hides the added keys", async () => {
+    const keysOnly = auditedSqlite();
+    const keyRows = await keysOnly.audited.delete(users).where(eq(users.id, "u1")).values();
+    await settled();
+    expect(keyRows).toEqual([["u1"]]);
+    expect(keysOnly.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const selected = auditedSqlite();
+    const nameRows = await selected.audited
+      .delete(users)
+      .where(eq(users.id, "u2"))
+      .returning({ name: users.name })
+      .values();
+    await settled();
+    expect(nameRows).toEqual([["Bo"]]);
+    expect(selected.entries.map((e) => e.recordId)).toEqual(["u2"]);
+
+    const none = auditedSqlite();
+    await none.audited.delete(users).where(eq(users.id, "nobody")).values();
+    await settled();
+    expect(none.entries).toHaveLength(0);
+  });
+
+  test("batch members record their own row ids", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    const results = await audited.batch([
+      audited.delete(users).where(eq(users.id, "u1")),
+      audited.delete(users).where(eq(users.id, "nobody")),
+      audited.delete(users).where(eq(users.id, "u3")).returning({ name: users.name }),
+    ]);
+    await settled();
+
+    expect(deletedIds()).toEqual(["u1", "u3"]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u3"]);
+    expect(results).toEqual([[{ id: "u1" }], [], [{ name: "Cy" }]]);
+  });
+
+  test("a prepared statement executed twice writes entries for both executions", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    const prepared = audited
+      .delete(users)
+      .where(eq(users.id, sql.placeholder("id")))
+      .prepare();
+    await prepared.execute({ id: "u1" });
+    await prepared.execute({ id: "u2" });
+    await settled();
+
+    expect(deletedIds()).toEqual(["u1", "u2"]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u2"]);
+  });
+
+  test("a builder awaited twice writes entries for each execution", async () => {
+    const { audited, entries } = auditedSqlite();
+
+    const statement = audited.delete(users).where(eq(users.id, "u1"));
+    await statement;
+    await statement;
+    await settled();
+
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u1"]);
+  });
+
+  test("a composite primary key serializes as a JSON array record id", async () => {
+    const { raw, audited, entries } = auditedSqlite();
+    raw.exec(`INSERT INTO memberships (org_id, user_id) VALUES ('o1', 'u1'), ('o1', 'u2')`);
+
+    await audited.delete(memberships).where(eq(memberships.userId, "u2"));
+    await settled();
+
+    expect(entries.map((e) => e.recordId)).toEqual([JSON.stringify(["o1", "u2"])]);
+  });
+
+  test("auditing a table with no primary key throws a named error", () => {
+    const { audited } = auditedSqlite();
+
+    expect(() => audited.delete(notes)).toThrow(MissingPrimaryKeyError);
+  });
+});
+
+describe("createAuditedDb soft-delete audit entries without RETURNING (MySQL)", () => {
+  test("pre-selects the matching keys and writes one entry per row", async () => {
+    const order: string[] = [];
+    const entries: AuditLogEntry[] = [];
+    const condition = { kind: "where" };
+    const selectWhere = vi.fn(async () => {
+      order.push("select");
+      return [{ __ledger_pk_0: "u1" }, { __ledger_pk_0: "u2" }];
+    });
+    const from = vi.fn(() => ({ where: selectWhere }));
+    const select = vi.fn(() => ({ from }));
+    const updateBuilder: Record<string, unknown> = { config: {} as Record<string, unknown> };
+    updateBuilder.where = vi.fn((w: unknown) => {
+      (updateBuilder.config as Record<string, unknown>).where = w;
+      return updateBuilder;
+    });
+    updateBuilder.execute = vi.fn(async () => {
+      order.push("update");
+      return [{ affectedRows: 2 }];
+    });
+    const db = {
+      delete: vi.fn(),
+      select,
+      update: vi.fn(() => ({ set: vi.fn(() => updateBuilder) })),
+    };
+
+    const audited = createAuditedDb(db, {
+      softDeleteTables: ["users"],
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+
+    const result = await audited.delete(usersWithSoftDelete).where(condition).execute();
+    await settled();
+
+    expect(order).toEqual(["select", "update"]);
+    expect(selectWhere).toHaveBeenCalledWith(condition);
+    expect(result).toEqual([{ affectedRows: 2 }]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u2"]);
+  });
+
+  test("a pre-select that finds nothing writes no entry", async () => {
+    const entries: AuditLogEntry[] = [];
+    const updateBuilder: Record<string, unknown> = { config: {} };
+    updateBuilder.where = vi.fn(() => updateBuilder);
+    updateBuilder.execute = vi.fn(async () => [{ affectedRows: 0 }]);
+    const db = {
+      delete: vi.fn(),
+      select: vi.fn(() => ({ from: () => ({ where: async () => [] }) })),
+      update: vi.fn(() => ({ set: vi.fn(() => updateBuilder) })),
+    };
+
+    const audited = createAuditedDb(db, {
+      softDeleteTables: ["users"],
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+
+    await audited.delete(usersWithSoftDelete).where({}).execute();
+    await settled();
 
     expect(entries).toHaveLength(0);
   });

@@ -78,6 +78,24 @@ export class MissingSoftDeleteColumnError extends Error {
 }
 
 /**
+ * Error thrown by createAuditedDb when it audits a soft delete on a
+ * table that declares no primary key: the audit entries carry one
+ * recordId per affected row, and without a key there is no id to write.
+ */
+export class MissingPrimaryKeyError extends Error {
+  readonly code = "MISSING_PRIMARY_KEY" as const;
+  readonly tableName: string;
+
+  constructor(tableName: string) {
+    super(
+      `Table '${tableName}' declares no primary key; createAuditedDb cannot record which rows a soft delete changed`,
+    );
+    this.name = "MissingPrimaryKeyError";
+    this.tableName = tableName;
+  }
+}
+
+/**
  * Error thrown by createAuditedDb at the first delete when the config
  * carries no softDeleteTables array (an untyped caller, or a cast past
  * the required type). The wrapper refuses to guess which tables

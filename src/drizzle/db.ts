@@ -16,15 +16,20 @@
  *   semantics and becomes soft-delete-all (UPDATE without WHERE). It
  *   executes; it does not silently no-op.
  * - Soft-delete audit entries (when `writeAuditEntry` is configured)
- *   are statement-level: one entry per executed soft-delete statement,
- *   with recordId "unknown" -- the wrapper does not know affected row
- *   ids without a returning() round-trip.
+ *   carry one recordId per affected row. On SQLite and PostgreSQL the
+ *   UPDATE runs with RETURNING the primary key, so a statement without
+ *   a caller returning() resolves to the affected keys instead of the
+ *   driver's run result. On MySQL the keys are selected before the
+ *   UPDATE, which is not atomic. run() executes through all() and
+ *   resolves to the rows, as an await does; values() reads the keys
+ *   from its row arrays.
  */
 
 import { createAuditEntry } from "../core/audit.js";
 import { getLedgerContext } from "../core/context.js";
 import {
   AuditTableDeleteError,
+  MissingPrimaryKeyError,
   MissingSoftDeleteColumnError,
   MissingSoftDeleteTablesError,
   UnresolvedSoftDeleteTableError,
@@ -55,9 +60,11 @@ export interface AuditedDbConfig {
   softDeleteTables: string[];
   /**
    * Audit sink for soft-delete conversions. When set, each executed
-   * soft-delete statement emits one SOFT_DELETE entry (statement-level,
-   * recordId "unknown") so the trail distinguishes soft-deletes from
-   * ordinary updates. Write failures are logged, never thrown.
+   * soft-delete statement emits one SOFT_DELETE entry per affected row,
+   * with the row's primary key as recordId (a composite key as a JSON
+   * array); a statement that matches nothing emits none. Tables audited
+   * this way need a primary key (MissingPrimaryKeyError otherwise).
+   * Write failures are logged, never thrown.
    */
   writeAuditEntry?: (entry: AuditLogEntry) => Promise<void>;
   /**
@@ -132,65 +139,156 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
+type Row = Record<PropertyKey, unknown>;
+
+function isRow(value: unknown): value is Row {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Prefix of the selection keys the wrapper adds to a caller's own returning(). */
+const PK_ALIAS_PREFIX = "__ledger_pk_";
+
+const COLUMNS_SYMBOL = Symbol.for("drizzle:Columns");
+const EXTRA_CONFIG_BUILDER_SYMBOL = Symbol.for("drizzle:ExtraConfigBuilder");
+const ENTITY_KIND_SYMBOL = Symbol.for("drizzle:entityKind");
+
 /**
- * Wrap a query builder so that the first successful execution -- via
- * direct await, .execute(), .run(), or any thenable chain stage
- * (.where(), .returning()) -- fires onExecuted exactly once. Chain
- * methods return wrapped builders so the observation survives chaining.
+ * The table's primary key as [property key, column] pairs in key order:
+ * a single `.primaryKey()` column, else the columns of a composite
+ * `primaryKey({ columns })` declared in the table's extra config.
+ * Empty when the table declares no primary key.
+ */
+function getPrimaryKeyColumns(table: unknown): [string, unknown][] {
+  if (!isRow(table)) return [];
+  const columns = table[COLUMNS_SYMBOL];
+  if (!isRow(columns)) return [];
+  const entries = Object.entries(columns);
+
+  const single = entries.filter(([, column]) => isRow(column) && column.primary === true);
+  if (single.length > 0) return single;
+
+  const extraConfigBuilder = table[EXTRA_CONFIG_BUILDER_SYMBOL];
+  if (typeof extraConfigBuilder !== "function") return [];
+  const extraConfig: unknown = extraConfigBuilder(columns);
+  const builders = Array.isArray(extraConfig)
+    ? extraConfig.flat(1)
+    : isRow(extraConfig)
+      ? Object.values(extraConfig)
+      : [];
+  for (const builder of builders) {
+    if (!isRow(builder) || typeof builder.build !== "function") continue;
+    const kind: unknown = (builder.constructor as unknown as Row | undefined)?.[ENTITY_KIND_SYMBOL];
+    if (typeof kind !== "string" || !kind.endsWith("PrimaryKeyBuilder")) continue;
+    const built: unknown = builder.build(table);
+    if (!isRow(built) || !Array.isArray(built.columns)) continue;
+    const keyColumns = built.columns;
+    return keyColumns.flatMap((keyColumn: unknown) => {
+      const entry = entries.find(([, column]) => column === keyColumn);
+      return entry ? [entry] : [];
+    });
+  }
+  return [];
+}
+
+/** One record id per row; a composite key serializes as a JSON array, as the Kysely plugin does. */
+function recordIdOf(values: readonly unknown[]): string {
+  if (values.length === 1) return String(values[0]);
+  return JSON.stringify(values.map((value) => String(value)));
+}
+
+/**
+ * The affected-row count a driver's run result reports (better-sqlite3
+ * `changes`, libsql `rowsAffected`, node-postgres `rowCount`, D1
+ * `meta.changes`), or undefined when it reports none.
+ */
+function affectedRowCount(result: unknown): number | undefined {
+  if (!isRow(result)) return undefined;
+  const meta = result.meta;
+  const candidates = [
+    result.changes,
+    result.rowsAffected,
+    result.rowCount,
+    isRow(meta) ? meta.changes : undefined,
+  ];
+  const count = candidates.find((value) => typeof value === "number");
+  return typeof count === "number" ? count : undefined;
+}
+
+/** Execution methods on Drizzle builders and prepared queries. */
+const EXECUTION_METHODS = new Set(["execute", "all", "run", "values"]);
+
+interface ExecutionHooks {
+  /**
+   * Receives each successful execution's result (plus whatever `before`
+   * produced) and returns the value the caller sees.
+   */
+  settle: (result: unknown, before: unknown) => unknown;
+  /** Runs ahead of every execution; its value is handed to settle. */
+  before?: () => Promise<unknown>;
+  /** Rewrites the caller's returning() selection. */
+  returning?: (fields: unknown) => unknown;
+}
+
+/**
+ * Wrap a query builder so that every successful execution -- via direct
+ * await, .catch(), .finally(), .execute(), .all(), .get(), .run(),
+ * .values(), or any chain stage (.where(), .returning(), .prepare()) --
+ * passes its result through hooks.settle. Chain methods return wrapped
+ * builders so the observation survives chaining.
  */
 function observeExecution<T extends object>(
   builder: T,
-  onExecuted: () => void,
+  hooks: ExecutionHooks,
   register?: (proxy: object) => void,
 ): T {
-  const observedThen = (
-    target: object,
-    thenFn: (f?: (r: unknown) => unknown, r?: (e: unknown) => unknown) => unknown,
-    onFulfilled?: (result: unknown) => unknown,
-    onRejected?: (error: unknown) => unknown,
-  ) =>
-    thenFn.call(
-      target,
-      (result: unknown) => {
-        onExecuted();
-        return onFulfilled ? onFulfilled(result) : result;
-      },
-      onRejected,
-    );
+  const { settle, before } = hooks;
+
+  // Run an execution, with `before` ahead of it when set, and settle its
+  // result. A sync driver's result settles synchronously.
+  const run = (execute: () => unknown): unknown => {
+    if (before) {
+      return before().then((pre) =>
+        Promise.resolve(execute()).then((result) => settle(result, pre)),
+      );
+    }
+    const result = execute();
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).then((r) => settle(r, undefined));
+    }
+    return settle(result, undefined);
+  };
 
   const proxy = new Proxy(builder, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
 
-      if (prop === "then" && typeof value === "function") {
-        return (
-          onFulfilled?: (result: unknown) => unknown,
-          onRejected?: (error: unknown) => unknown,
-        ) =>
-          observedThen(
-            target,
-            value as (f?: (r: unknown) => unknown, r?: (e: unknown) => unknown) => unknown,
-            onFulfilled,
-            onRejected,
-          );
-      }
-
-      // catch must route through the OBSERVED then, not the generic
-      // branch: Drizzle's QueryPromise implements catch as
-      // this.then(undefined, onRejected), and the generic branch would
-      // re-observe the promise catch returns -- which FULFILLS when the
-      // handler swallows a rejection, firing a false SOFT_DELETE audit
-      // entry for a statement that never executed.
-      if (prop === "catch" && typeof value === "function") {
-        const thenFn = Reflect.get(target, "then", receiver);
+      // catch and finally must route through the OBSERVED then, not a
+      // generic branch: Drizzle's QueryPromise implements both as
+      // this.then(...) on the unwrapped target, so through the generic
+      // branch finally would execute unobserved (no entry, reserved
+      // aliases leaked), and re-observing the promise catch returns --
+      // which FULFILLS when the handler swallows a rejection -- would
+      // write a false SOFT_DELETE audit entry for a statement that
+      // never executed.
+      if (
+        (prop === "then" || prop === "catch" || prop === "finally") &&
+        typeof value === "function"
+      ) {
+        const thenFn: unknown = prop === "then" ? value : Reflect.get(target, "then", receiver);
         if (typeof thenFn === "function") {
-          return (onRejected?: (error: unknown) => unknown) =>
-            observedThen(
-              target,
-              thenFn as (f?: (r: unknown) => unknown, r?: (e: unknown) => unknown) => unknown,
-              undefined,
-              onRejected,
-            );
+          const observedThen = (
+            onFulfilled?: (result: unknown) => unknown,
+            onRejected?: (error: unknown) => unknown,
+          ) =>
+            Promise.resolve(
+              run(() => new Promise((resolve, reject) => thenFn.call(target, resolve, reject))),
+            ).then(onFulfilled, onRejected);
+          if (prop === "then") return observedThen;
+          if (prop === "catch") {
+            return (onRejected?: (error: unknown) => unknown) =>
+              observedThen(undefined, onRejected);
+          }
+          return (onFinally?: () => void) => observedThen().finally(onFinally);
         }
       }
 
@@ -198,25 +296,44 @@ function observeExecution<T extends object>(
         return value;
       }
 
+      const method = value as (...a: unknown[]) => unknown;
+
+      // get() returns only the first row and run() discards the rows,
+      // so ids read from either would be wrong: execute through all().
+      // get() hands the caller the first row; run() hands it the rows,
+      // as an await does.
+      if (prop === "get" || prop === "run") {
+        const all: unknown = Reflect.get(target, "all", receiver);
+        if (typeof all === "function") {
+          return (...args: unknown[]) => {
+            const rows = run(() => all.apply(target, args));
+            if (prop === "run") return rows;
+            const first = (r: unknown) => (Array.isArray(r) ? r[0] : r);
+            return isPromiseLike(rows) ? Promise.resolve(rows).then(first) : first(rows);
+          };
+        }
+      }
+
+      if (typeof prop === "string" && EXECUTION_METHODS.has(prop)) {
+        return (...args: unknown[]) => run(() => method.apply(target, args));
+      }
+
+      if (prop === "returning" && hooks.returning) {
+        const rewrite = hooks.returning;
+        return (fields?: unknown) =>
+          observeExecution(method.call(target, rewrite(fields)) as object, hooks, register);
+      }
+
       return (...args: unknown[]) => {
-        const result = (value as (...a: unknown[]) => unknown).apply(target, args);
-
-        if (isPromiseLike(result)) {
-          // Thenable builders (where/returning chains) stay observable;
-          // plain promises (execute/run) observe on fulfillment.
-          if (typeof result === "object" && result !== null && !(result instanceof Promise)) {
-            return observeExecution(result as object, onExecuted, register);
-          }
-          return (result as Promise<unknown>).then((r) => {
-            onExecuted();
-            return r;
-          });
+        const result = method.apply(target, args);
+        if (
+          result !== null &&
+          typeof result === "object" &&
+          !(result instanceof Promise) &&
+          !Array.isArray(result)
+        ) {
+          return observeExecution(result as object, hooks, register);
         }
-
-        if (result !== null && typeof result === "object") {
-          return observeExecution(result as object, onExecuted, register);
-        }
-
         return result;
       };
     },
@@ -258,9 +375,9 @@ function observeExecution<T extends object>(
 export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig): T {
   const softDeleteFactory = config?.softDeleteValuesFactory ?? softDeleteValues;
   // Statement proxies (and every proxy derived from them by chaining)
-  // mapped to their once-guarded audit trigger, so the batch path can
-  // fire audits for member statements that never flow through then().
-  const statementAudits = new WeakMap<object, () => void>();
+  // mapped to their settle function, so the batch path can audit member
+  // statements that never flow through then().
+  const statementAudits = new WeakMap<object, (result: unknown) => unknown>();
 
   const auditTableName = config?.auditTableName ?? "audit_log";
 
@@ -305,24 +422,108 @@ export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig
       return builder;
     }
 
-    let audited = false;
-    const fireAudit = () => {
-      if (audited) return;
-      audited = true;
-      const entry = createAuditEntry({
-        tableName,
-        recordId: "unknown",
-        action: "SOFT_DELETE",
-        oldData: null,
-        newData: { ...deleteValues },
-      });
-      writeAuditEntry(entry).catch((err) => {
-        console.error("[ledger] Failed to write soft-delete audit entry:", err);
-      });
+    const keys = getPrimaryKeyColumns(table);
+    if (keys.length === 0) {
+      throw new MissingPrimaryKeyError(tableName);
+    }
+
+    // Called once per execution, and every execution writes: a prepared
+    // statement run again or a builder awaited twice soft-deletes its
+    // rows again. Settle is not re-entrant (Drizzle's then/execute run
+    // on the unwrapped target), so one execution writes one entry set.
+    const writeEntries = (recordIds: readonly string[]) => {
+      for (const recordId of recordIds) {
+        const entry = createAuditEntry({
+          tableName,
+          recordId,
+          action: "SOFT_DELETE",
+          oldData: null,
+          newData: { ...deleteValues },
+        });
+        writeAuditEntry(entry).catch((err) => {
+          console.error("[ledger] Failed to write soft-delete audit entry:", err);
+        });
+      }
     };
 
-    return observeExecution(builder as object, fireAudit, (proxy) => {
-      statementAudits.set(proxy, fireAudit);
+    // The key selection under reserved aliases, for merging into a
+    // caller's own returning() and for the MySQL pre-select.
+    const aliased: Row = Object.fromEntries(
+      keys.map(([, column], i) => [`${PK_ALIAS_PREFIX}${i}`, column]),
+    );
+    const aliasKeys = Object.keys(aliased);
+
+    const builderRow = builder as Row;
+    if (typeof builderRow.returning !== "function") {
+      // No UPDATE ... RETURNING (MySQL): select the matching keys first,
+      // then run the update. Not atomic: a row that starts or stops
+      // matching between the two statements is misreported.
+      const source = target as unknown as {
+        select: (fields: Row) => { from: (t: unknown) => { where: (w: unknown) => unknown } };
+      };
+      const before = async () => {
+        const config = builderRow.config;
+        const where = isRow(config) ? config.where : undefined;
+        const rows: unknown = await source.select(aliased).from(table).where(where);
+        return Array.isArray(rows) ? rows.filter(isRow) : [];
+      };
+      const settle = (result: unknown, selected: unknown) => {
+        if (Array.isArray(selected)) {
+          writeEntries(
+            selected.filter(isRow).map((row) => recordIdOf(aliasKeys.map((key) => row[key]))),
+          );
+        }
+        return result;
+      };
+      return observeExecution(builder as object, { settle, before }, (proxy) => {
+        statementAudits.set(proxy, (result) => settle(result, undefined));
+      });
+    }
+
+    // UPDATE ... RETURNING the key columns under their own property
+    // names. A caller's returning() replaces the selection, so it is
+    // rewritten to carry the key under reserved aliases, which settle
+    // strips again before the caller sees the rows.
+    let idKeys = keys.map(([key]) => key);
+    let stripAliases = false;
+    const returning = (fields: unknown) => {
+      idKeys = aliasKeys;
+      stripAliases = true;
+      const base = isRow(fields) ? fields : isRow(table) ? table[COLUMNS_SYMBOL] : undefined;
+      return { ...(isRow(base) ? base : {}), ...aliased };
+    };
+
+    // A rows array tells which rows changed: an empty one means nothing
+    // matched, so nothing is written. values() returns each row as an
+    // array in selection order, where the key columns come last (the
+    // whole selection, or the aliases appended to a caller's own).
+    // Any other result names no rows: it writes one statement-level
+    // entry with recordId "unknown" unless the driver reports zero
+    // affected rows.
+    const settle = (result: unknown) => {
+      if (Array.isArray(result) && result.every(Array.isArray)) {
+        const keyStart = (row: unknown[]) => row.length - keys.length;
+        writeEntries(result.map((row: unknown[]) => recordIdOf(row.slice(keyStart(row)))));
+        if (!stripAliases) return result;
+        return result.map((row: unknown[]) => row.slice(0, keyStart(row)));
+      }
+      if (!Array.isArray(result) || !result.every(isRow)) {
+        if (affectedRowCount(result) !== 0) writeEntries(["unknown"]);
+        return result;
+      }
+      writeEntries(result.map((row) => recordIdOf(idKeys.map((key) => row[key]))));
+      if (!stripAliases) return result;
+      return result.map((row) =>
+        Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith(PK_ALIAS_PREFIX))),
+      );
+    };
+
+    const withKeys = (builderRow.returning as (fields: Row) => object).call(
+      builder,
+      Object.fromEntries(keys),
+    );
+    return observeExecution(withKeys, { settle, returning }, (proxy) => {
+      statementAudits.set(proxy, settle);
     });
   };
 
@@ -339,9 +540,9 @@ export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig
         }
         // Drizzle's batch reaches into each statement via _prepare()
         // and never touches then()/execute(), so execution observation
-        // cannot fire there. Observe at the batch boundary instead:
-        // when the batch fulfills, fire the audit trigger of every
-        // member statement built through this wrapper.
+        // cannot fire there. Observe at the batch boundary instead: the
+        // batch result is index-aligned with its statements, so each
+        // member built through this wrapper settles its own result.
         return (statements: unknown[], ...args: unknown[]) => {
           const result = (original as (...a: unknown[]) => unknown).call(
             target,
@@ -349,14 +550,17 @@ export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig
             ...args,
           );
           return Promise.resolve(result).then((batchResult) => {
-            if (Array.isArray(statements)) {
-              for (const statement of statements) {
-                if (statement !== null && typeof statement === "object") {
-                  statementAudits.get(statement)?.();
-                }
-              }
+            if (!Array.isArray(statements) || !Array.isArray(batchResult)) {
+              return batchResult;
             }
-            return batchResult;
+            return batchResult.map((memberResult: unknown, i) => {
+              const statement: unknown = statements[i];
+              const settle =
+                statement !== null && typeof statement === "object"
+                  ? statementAudits.get(statement)
+                  : undefined;
+              return settle ? settle(memberResult) : memberResult;
+            });
           });
         };
       }

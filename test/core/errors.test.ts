@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   AuditTableDeleteError,
+  MissingPrimaryKeyError,
   isSoftDeletePerformed,
   LedgerContextUnavailableError,
   MissingSoftDeleteColumnError,
@@ -28,6 +29,13 @@ describe("hardening error classes", () => {
     expect(error.code).toBe("MISSING_SOFT_DELETE_TABLES");
     expect(error.name).toBe("MissingSoftDeleteTablesError");
     expect(error.message).toContain("softDeleteTables");
+  });
+
+  test("MissingPrimaryKeyError names the table without a key", () => {
+    const error = new MissingPrimaryKeyError("notes");
+    expect(error.code).toBe("MISSING_PRIMARY_KEY");
+    expect(error.name).toBe("MissingPrimaryKeyError");
+    expect(error.tableName).toBe("notes");
   });
 
   test("existing error classes unchanged", () => {

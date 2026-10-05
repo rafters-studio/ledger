@@ -540,6 +540,7 @@ SQLite/Postgres use `CREATE INDEX IF NOT EXISTS`. MySQL omits `IF NOT EXISTS`.
 | `softDeleteTables` | `string[]` | Required. Table names whose deletes become soft-delete UPDATEs; unlisted tables hard-delete. Pass `[]` for none |
 | `hardDeleteTables` | `string[] \| undefined` | Table names that skip soft-delete and execute real DELETEs, even when listed in `softDeleteTables` |
 | `softDeleteValuesFactory` | `(deletedBy?: string \| null) => { deletedAt: Date; deletedBy: string \| null } \| undefined` | Custom factory for soft-delete values |
+| `writeAuditEntry` | `(entry: AuditLogEntry) => Promise<void> \| undefined` | Writes one `SOFT_DELETE` entry per affected row, `recordId` set to the row's primary key; none when nothing matched. Audited tables need a primary key (`MissingPrimaryKeyError`). See the Soft-Delete guide for the result-shape change |
 
 ---
 
