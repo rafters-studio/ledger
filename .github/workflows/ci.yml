@@ -25,3 +25,32 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  better-auth:
+    # The integration suite against both ends of the declared better-auth
+    # peer range. Both versions resolve from package.json, so a peer-range
+    # change moves this matrix with it.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        edge: [floor, latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install the ${{ matrix.edge }} better-auth in the peer range
+        run: |
+          range=$(node -p "require('./package.json').peerDependencies['better-auth']")
+          version=$(pnpm view "better-auth@$range" version --json | node -e '
+            const parsed = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const versions = [parsed].flat();
+            console.log(process.argv[1] === "floor" ? versions[0] : versions[versions.length - 1]);
+          ' "${{ matrix.edge }}")
+          echo "better-auth $range -> ${{ matrix.edge }} $version"
+          pnpm add -D "better-auth@$version"
+      - run: pnpm vitest run test/better-auth.integration.test.ts test/better-auth.test.ts
