@@ -1,5 +1,11 @@
 # @rafters/ledger
 
+## 0.4.1
+
+### Patch Changes
+
+- 0.4.0 never reached npm: the release workflow's old setup (Node 20 actions and a `registry-url` placeholder token alongside trusted publishing) reported success without publishing. 0.4.1 carries every 0.4.0 change listed below, published from the updated workflow. Upgrade from 0.3.0 straight to 0.4.1 and follow the 0.4.0 migration notes.
+
 ## 0.4.0
 
 ### Minor Changes
