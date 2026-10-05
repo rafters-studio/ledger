@@ -108,11 +108,11 @@ export interface LedgerAdapter<TDb, TAuditTable, TQueryFilter> {
 
   /**
    * Wrap a database instance so that delete() calls are automatically
-   * converted to soft-delete for tables with a deletedAt column.
+   * converted to soft-delete for the tables in config.softDeleteTables.
    *
    * @param db - The database instance to wrap
-   * @param config - Optional configuration
+   * @param config - Configuration; softDeleteTables is required
    * @returns The wrapped database instance (same type as input)
    */
-  createAuditedDb(db: TDb, config?: AuditedDbConfig): TDb;
+  createAuditedDb(db: TDb, config: AuditedDbConfig): TDb;
 }

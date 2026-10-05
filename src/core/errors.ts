@@ -60,7 +60,7 @@ export function isSoftDeletePerformed(error: unknown): error is SoftDeletePerfor
 }
 
 /**
- * Error thrown by createAuditedDb in allowlist mode when a table listed
+ * Error thrown by createAuditedDb when a table listed
  * in softDeleteTables is deleted from but has no deletedAt property.
  * Loud failure instead of a silent fallback to hard delete.
  */
@@ -78,7 +78,42 @@ export class MissingSoftDeleteColumnError extends Error {
 }
 
 /**
- * Error thrown by createAuditedDb in allowlist mode when the table
+ * Error thrown by createAuditedDb when it audits a soft delete on a
+ * table that declares no primary key: the audit entries carry one
+ * recordId per affected row, and without a key there is no id to write.
+ */
+export class MissingPrimaryKeyError extends Error {
+  readonly code = "MISSING_PRIMARY_KEY" as const;
+  readonly tableName: string;
+
+  constructor(tableName: string) {
+    super(
+      `Table '${tableName}' declares no primary key; createAuditedDb cannot record which rows a soft delete changed`,
+    );
+    this.name = "MissingPrimaryKeyError";
+    this.tableName = tableName;
+  }
+}
+
+/**
+ * Error thrown by createAuditedDb at the first delete when the config
+ * carries no softDeleteTables array (an untyped caller, or a cast past
+ * the required type). The wrapper refuses to guess which tables
+ * soft-delete, because a wrong guess hard-deletes silently.
+ */
+export class MissingSoftDeleteTablesError extends Error {
+  readonly code = "MISSING_SOFT_DELETE_TABLES" as const;
+
+  constructor() {
+    super(
+      "createAuditedDb requires softDeleteTables: pass the soft-delete table names (or [] for none) in its config",
+    );
+    this.name = "MissingSoftDeleteTablesError";
+  }
+}
+
+/**
+ * Error thrown by createAuditedDb when the table
  * object's name cannot be resolved: the allowlist cannot be consulted,
  * and silently falling through to hard delete would defeat the mode.
  */
@@ -87,7 +122,7 @@ export class UnresolvedSoftDeleteTableError extends Error {
 
   constructor() {
     super(
-      "Cannot resolve the table name for a delete in softDeleteTables allowlist mode; refusing to guess between soft and hard delete",
+      "Cannot resolve the table name for a delete checked against softDeleteTables; refusing to guess between soft and hard delete",
     );
     this.name = "UnresolvedSoftDeleteTableError";
   }

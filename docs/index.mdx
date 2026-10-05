@@ -15,7 +15,7 @@ Peer dependency: `drizzle-orm >= 0.30.0`
 | Feature | What it does |
 |---|---|
 | Soft-delete columns | `...softDeleteColumns` adds `deleted_at` and `deleted_by` to any table |
-| Automatic soft-delete | `createAuditedDb` rewrites `db.delete()` to an UPDATE for tables with `deleted_at` |
+| Automatic soft-delete | `createAuditedDb` rewrites `db.delete()` to an UPDATE for the tables you list in `softDeleteTables` |
 | Audit trail | `auditLog` schema + context middleware captures who changed what, when, from where |
 | GDPR purge | `purgeUserData` anonymizes PII in audit entries; leaves the trail intact |
 | Better Auth plugin | Hooks into `databaseHooks` to log user/account mutations and intercept hard deletes |
@@ -78,6 +78,7 @@ export function createDb(d1: D1Database) {
   const base = drizzle(d1, { schema });
 
   return createAuditedDb(base, {
+    softDeleteTables: ['users'],
     auditLogTable: schema.auditLog,
     writeAuditEntry: async (entry) => {
       await base.insert(schema.auditLog).values({ ...entry, id: crypto.randomUUID() });
@@ -87,7 +88,7 @@ export function createDb(d1: D1Database) {
 }
 ```
 
-`db.delete(users).where(eq(users.id, id))` now executes a soft-delete UPDATE because `users` has `deleted_at`. Tables in `hardDeleteTables` pass through to real deletes.
+`db.delete(users).where(eq(users.id, id))` now executes a soft-delete UPDATE because `users` is listed in `softDeleteTables` and has `deleted_at`. Tables in `hardDeleteTables` pass through to real deletes.
 
 ### 4. Querying
 
