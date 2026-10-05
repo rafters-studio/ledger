@@ -111,9 +111,9 @@ function redactValue(value: unknown, loweredPatterns: string[]): unknown {
 }
 
 /**
- * Redact a row of a named table: first the table's TABLE_SECRET_COLUMNS
- * (top-level keys, exact name), then every key-name pattern via
- * redactSensitiveFields.
+ * Redact a row of a named table: every key-name pattern via
+ * redactSensitiveFields, then the table's TABLE_SECRET_COLUMNS
+ * (top-level keys, exact name) on that fresh copy.
  *
  * @param tableName - The table the row belongs to
  * @param data - The row payload
