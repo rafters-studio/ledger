@@ -2,8 +2,10 @@
  * Drizzle Ledger Audited Database
  *
  * Wraps a Drizzle database instance (without mutating it) so that
- * delete() calls are automatically converted to soft-delete for tables
- * with a deletedAt column. Transaction callbacks receive an equally
+ * delete() calls on the tables named in softDeleteTables are converted
+ * to soft-delete. The allowlist is required: there is no mode that
+ * guesses from a deletedAt column, because a guess that misses a table
+ * hard-deletes it silently. Transaction callbacks receive an equally
  * wrapped tx, so deletes inside transactions get the same conversion.
  *
  * Scope and honesty notes:
@@ -24,6 +26,7 @@ import { getLedgerContext } from "../core/context.js";
 import {
   AuditTableDeleteError,
   MissingSoftDeleteColumnError,
+  MissingSoftDeleteTablesError,
   UnresolvedSoftDeleteTableError,
 } from "../core/errors.js";
 import { softDeleteValues } from "../core/soft-delete.js";
@@ -41,13 +44,15 @@ export interface AuditedDbConfig {
     deletedBy: string | null;
   };
   /**
-   * Explicit allowlist of soft-delete tables (by drizzle table name).
-   * When provided, replaces deletedAt duck-typing: a delete on a listed
-   * table without the deletedAt property THROWS MissingSoftDeleteColumnError
+   * Required allowlist of soft-delete tables (by drizzle table name).
+   * A delete on a listed table converts to soft-delete; a listed table
+   * without the deletedAt property THROWS MissingSoftDeleteColumnError
    * instead of silently hard-deleting; unlisted tables hard-delete.
-   * Without it, any table with a deletedAt property is converted.
+   * Pass [] to soft-delete nothing. A call without it fails type-check,
+   * and an untyped caller that omits it gets MissingSoftDeleteTablesError
+   * at the first delete.
    */
-  softDeleteTables?: string[];
+  softDeleteTables: string[];
   /**
    * Audit sink for soft-delete conversions. When set, each executed
    * soft-delete statement emits one SOFT_DELETE entry (statement-level,
@@ -222,13 +227,13 @@ function observeExecution<T extends object>(
 
 /**
  * Wraps a Drizzle database instance to automatically convert
- * delete() calls to soft-delete for tables with deletedAt column.
+ * delete() calls to soft-delete for the tables in softDeleteTables.
  *
  * Returns a wrapped instance; the original `db` reference is NOT
  * mutated and keeps original hard-delete behavior.
  *
  * @param db - The Drizzle database instance
- * @param config - Optional configuration
+ * @param config - Configuration; softDeleteTables is required
  * @returns A wrapped database instance (same type as input)
  *
  * @example
@@ -250,7 +255,7 @@ function observeExecution<T extends object>(
  * });
  * ```
  */
-export function createAuditedDb<T extends object>(db: T, config?: AuditedDbConfig): T {
+export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig): T {
   const softDeleteFactory = config?.softDeleteValuesFactory ?? softDeleteValues;
   // Statement proxies (and every proxy derived from them by chaining)
   // mapped to their once-guarded audit trigger, so the batch path can
@@ -260,6 +265,12 @@ export function createAuditedDb<T extends object>(db: T, config?: AuditedDbConfi
   const auditTableName = config?.auditTableName ?? "audit_log";
 
   const interceptDelete = (table: unknown): unknown => {
+    // Untyped callers can still omit the allowlist; refuse rather than
+    // guess which tables soft-delete.
+    if (!Array.isArray(config?.softDeleteTables)) {
+      throw new MissingSoftDeleteTablesError();
+    }
+
     const target = db as unknown as DeleteAndUpdateCapable;
     const tableName = getTableName(table);
 
@@ -272,23 +283,17 @@ export function createAuditedDb<T extends object>(db: T, config?: AuditedDbConfi
       return target.delete(table);
     }
 
-    if (config?.softDeleteTables) {
-      // Allowlist mode: loud by contract. An unresolvable table name
-      // cannot be checked against the allowlist, so it throws instead
-      // of silently hard-deleting in the mode that exists to prevent
-      // exactly that.
-      if (!tableName) {
-        throw new UnresolvedSoftDeleteTableError();
-      }
-      if (!config.softDeleteTables.includes(tableName)) {
-        return target.delete(table);
-      }
-      if (!hasColumn(table, "deletedAt")) {
-        throw new MissingSoftDeleteColumnError(tableName);
-      }
-    } else if (!hasColumn(table, "deletedAt")) {
-      // Duck-typing mode: no deletedAt property means hard delete.
+    // Loud by contract: an unresolvable table name cannot be checked
+    // against the allowlist, so it throws instead of silently
+    // hard-deleting.
+    if (!tableName) {
+      throw new UnresolvedSoftDeleteTableError();
+    }
+    if (!config.softDeleteTables.includes(tableName)) {
       return target.delete(table);
+    }
+    if (!hasColumn(table, "deletedAt")) {
+      throw new MissingSoftDeleteColumnError(tableName);
     }
 
     const context = getLedgerContext();
@@ -305,7 +310,7 @@ export function createAuditedDb<T extends object>(db: T, config?: AuditedDbConfi
       if (audited) return;
       audited = true;
       const entry = createAuditEntry({
-        tableName: tableName ?? "unknown",
+        tableName,
         recordId: "unknown",
         action: "SOFT_DELETE",
         oldData: null,

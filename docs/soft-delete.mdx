@@ -168,23 +168,29 @@ if (isSoftDeleted(user)) {
 
 ## Automatic Soft-Delete with `createAuditedDb`
 
-`createAuditedDb` wraps a Drizzle database instance and intercepts `db.delete()` calls. The call site does not change: `db.delete(users).where(...)` looks identical whether or not the table has a `deletedAt` column. The behavior changes based on table schema.
+`createAuditedDb` wraps a Drizzle database instance and intercepts `db.delete()` calls. The call site does not change: `db.delete(users).where(...)` looks identical for every table. The behavior depends on `softDeleteTables`, the required list of tables that soft-delete.
 
 ```typescript
 import { drizzle } from 'drizzle-orm/d1';
 import { createAuditedDb } from '@rafters/ledger/drizzle';
 
 const baseDb = drizzle(env.DB);
-export const db = createAuditedDb(baseDb);
+export const db = createAuditedDb(baseDb, {
+  softDeleteTables: ['users', 'messages'],
+});
 ```
+
+`softDeleteTables` is required. A call without it fails type-check, and an untyped caller that omits it gets `MissingSoftDeleteTablesError` at the first delete. The wrapper never guesses from a `deletedAt` column, because a table the guess missed would hard-delete silently. Pass `[]` to soft-delete nothing.
 
 ### How the interception works
 
 When `db.delete(table)` is called:
 
-1. The wrapper checks if the table has a `deletedAt` column using `hasColumn`.
-2. If yes: the delete becomes `db.update(table).set({ deletedAt: ..., deletedBy: ... }).where(condition)`.
-3. If no: the original `db.delete` executes unchanged.
+1. If the table is in `hardDeleteTables`, the original `db.delete` executes unchanged.
+2. If the table name cannot be resolved, the wrapper throws `UnresolvedSoftDeleteTableError` rather than guess.
+3. If the table is not in `softDeleteTables`, the original `db.delete` executes unchanged.
+4. If it is listed but has no `deletedAt` column, the wrapper throws `MissingSoftDeleteColumnError`.
+5. Otherwise the delete becomes `db.update(table).set({ deletedAt: ..., deletedBy: ... }).where(condition)`.
 
 The `deletedBy` value comes from the active ledger context automatically. If `runWithLedgerContext` is set up in middleware with the current user ID, the wrapper reads it without any additional wiring at the call site.
 
@@ -197,9 +203,9 @@ await db.delete(users).where(eq(users.id, userId));
 // with deleted_by pulled from the active ledger context
 ```
 
-### Tables without `deletedAt`
+### Unlisted tables
 
-Tables that do not include soft-delete columns receive a genuine hard delete. No configuration needed.
+Tables not named in `softDeleteTables` receive a genuine hard delete, whether or not they have a `deletedAt` column. List every table that should soft-delete.
 
 ```typescript
 const logs = sqliteTable('logs', {
@@ -214,15 +220,16 @@ await db.delete(logs).where(eq(logs.id, logId));
 
 ### `hardDeleteTables` config
 
-Some tables should always hard-delete even if they have a `deletedAt` column. Session and verification tables are the common case: you want those rows gone, not flagged.
+Unlisted tables already hard-delete. `hardDeleteTables` forces a hard delete for a table even when it is also in `softDeleteTables`, which is useful when the allowlist is shared or generated. Session and verification tables are the common case: you want those rows gone, not flagged.
 
 ```typescript
 export const db = createAuditedDb(baseDb, {
+  softDeleteTables: ['users', 'messages'],
   hardDeleteTables: ['session', 'verification'],
 });
 ```
 
-Pass the SQL table name string, not the Drizzle table variable name. The wrapper reads the table name from the Drizzle internal symbol `drizzle:Name`.
+Pass the SQL table name string to both lists, not the Drizzle table variable name. The wrapper reads the table name from the Drizzle internal symbol `drizzle:Name`.
 
 ### Full setup with context middleware
 
@@ -236,6 +243,7 @@ import {
 
 const baseDb = drizzle(env.DB);
 export const db = createAuditedDb(baseDb, {
+  softDeleteTables: ['users', 'messages'],
   hardDeleteTables: ['session', 'verification'],
 });
 
