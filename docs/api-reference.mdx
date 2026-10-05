@@ -630,7 +630,7 @@ Returns an `afterDelete` callback that logs a DELETE audit entry without interfe
 | `action` | `"INSERT" \| "UPDATE" \| "SOFT_DELETE" \| "DELETE"` | Operation type |
 | `oldData` | `Record<string, unknown> \| null` | Data before the operation; `null` for INSERT |
 | `newData` | `Record<string, unknown> \| null` | Data after the operation; `null` for DELETE |
-| `userId` | `string \| null` | User performing the action; for `account` hooks this is `null` |
+| `userId` | `string \| null` | User performing the action: the hook context's session user, then the ledger context's `userId`; the target's own id only for user sign-up and user deletion |
 
 ---
 
@@ -648,7 +648,7 @@ The default key-pattern list, the per-table secret columns (`{ verification: ["v
 
 ### `assertLedgerContextAvailable()`
 
-Throws `LedgerContextUnavailableError` when `AsyncLocalStorage` is missing from the runtime. Call at boot to fail fast instead of shipping an unattributed audit trail -- without it, the first degraded access logs a single warning and every entry's `userId` (and soft-delete `deletedBy`) is silently `null`.
+Throws `LedgerContextUnavailableError` when `AsyncLocalStorage` is missing from the runtime. Call at boot to fail fast when your audit trail depends on ledger context -- without it, the first degraded access logs a single warning and every context-sourced `userId` (and soft-delete `deletedBy`) is silently `null`. The better-auth plugin does not need it for attribution: it reads the actor from the hook context.
 
 ### `LedgerContextUnavailableError` / `AuditTableDeleteError`
 

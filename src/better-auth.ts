@@ -33,7 +33,6 @@
 
 import type { AuthContext, BetterAuthPlugin, User } from "better-auth";
 import { getLedgerContext } from "./core/context.js";
-import type { LedgerContext } from "./core/types.js";
 import { softDeleteValues } from "./core/soft-delete.js";
 import { redactTableRow } from "./core/redact.js";
 
@@ -138,6 +137,18 @@ function redactAuditEntry(
 type UserWithId = { id: string } & Record<string, unknown>;
 
 /**
+ * The part of better-auth's hook context (GenericEndpointContext, the
+ * second argument of every databaseHook) the plugin reads. null or
+ * undefined when the write runs outside an endpoint.
+ */
+type HookContext =
+  | {
+      context?: { session?: { user?: { id?: string } } | null };
+    }
+  | null
+  | undefined;
+
+/**
  * Better Auth plugin for audit logging.
  *
  * Features:
@@ -145,22 +156,12 @@ type UserWithId = { id: string } & Record<string, unknown>;
  *   auditTables via databaseHooks (INSERT, UPDATE, DELETE entries)
  * - Optional user soft delete (softDeleteUser) via databaseHooks.user.delete.before
  *
- * ATTRIBUTION REQUIRES CONTEXT: entries attribute to the authenticated
- * principal from AsyncLocalStorage. Wrap request handling in
- * runWithLedgerContext or every actor is null (except self-signup):
- *
- * ```typescript
- * // Hono middleware, before the auth handler
- * app.use(async (c, next) => {
- *   return runWithLedgerContext(
- *     createLedgerContext({
- *       userId: c.get("user")?.id ?? null,
- *       endpoint: `${c.req.method} ${c.req.path}`,
- *     }),
- *     next,
- *   );
- * });
- * ```
+ * Attribution comes from the hook context better-auth passes every
+ * databaseHook: the session user of the endpoint that caused the write.
+ * No middleware is needed for it. runWithLedgerContext stays useful for
+ * calls outside a better-auth endpoint (internalAdapter from a job, a
+ * script) and as the actor when the endpoint has no session; see
+ * resolveActor for the order.
  *
  * @param config - Plugin configuration
  * @returns BetterAuthPlugin instance
@@ -209,16 +210,34 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   }
 
   /**
-   * Resolve the acting principal for an audit entry.
-   * The authenticated actor from ledger context (runWithLedgerContext
-   * middleware) always wins; without context the actor is unknown --
-   * NEVER default to the target row's id, which recorded an admin
-   * banning a user as the user acting on themselves. The one exception
-   * is user self-creation (signup), where the created user genuinely is
-   * the actor and no context exists yet.
+   * Resolve the acting principal for an audit entry, in order:
+   *
+   * 1. The hook context's session user (ctx.context.session.user.id).
+   * 2. The ledger context's userId (runWithLedgerContext), for writes
+   *    outside an endpoint or from an endpoint with no session.
+   * 3. The fallback: the target row's own id, passed only for user
+   *    self-signup and user deletion, where the target is the actor.
+   *
+   * Otherwise the actor is unknown (null) -- NEVER default to the target
+   * row's id, which recorded an admin banning a user as the user acting
+   * on themselves.
+   *
+   * Which hooks carry a session (read from better-auth 1.7.7 source;
+   * db/with-hooks passes tryGetCurrentAuthEndpointContext() to every
+   * create, update, and delete hook): ctx.context.session is set by
+   * getSessionFromCtx, which the session middlewares (sessionMiddleware,
+   * sensitiveSessionMiddleware, freshSessionMiddleware, the admin
+   * plugin's adminMiddleware) and some route bodies call. So update and
+   * delete hooks from an authenticated route carry it: updateUser,
+   * admin updateUser/setRole/banUser, unlinkAccount, revokeSession(s),
+   * deleteUser, and verify-email when the caller is signed in.
+   * create.after on user during sign-up does not: sign-up and sign-in
+   * run only formCsrfMiddleware and never read the session, and the new
+   * session is created after the user. ctx is undefined when
+   * internalAdapter is called outside an endpoint.
    */
-  function resolveActor(fallback: string | null = null): string | null {
-    return getLedgerContext()?.userId ?? fallback;
+  function resolveActor(ctx: HookContext, fallback: string | null = null): string | null {
+    return ctx?.context?.session?.user?.id ?? getLedgerContext()?.userId ?? fallback;
   }
 
   // Build databaseHooks based on audited tables
@@ -226,26 +245,32 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   const databaseHooks: Record<string, any> = {};
 
   // Pair update.before change sets with update.after results, keyed by
-  // the request's LedgerContext object (per-table queue per context).
-  // better-auth's after hook has no access to the previous row and the
-  // before hook has no row id, so exact pairing is impossible from the
-  // hook surface. Keying by context confines pairing to one request:
-  // concurrent requests in the same isolate can never cross-pair, and
-  // an abandoned capture (a failed or vetoed update) dies with its
-  // context instead of desyncing the plugin forever. Within one
-  // request the queue is FIFO -- multiple updates to the same table in
-  // a single request pair in order, and a veto mid-request can still
-  // offset later pairs in THAT request; the { changed } entry shape
-  // keeps the provenance explicit rather than pretending to be a full
-  // before-image. Without a ledger context no capture happens and
-  // oldData stays null -- change-set capture, like attribution,
-  // requires runWithLedgerContext.
-  const pendingChangeSets = new WeakMap<LedgerContext, Record<string, Record<string, unknown>[]>>();
+  // the request (per-table queue per request). better-auth's after hook
+  // has no access to the previous row and the before hook has no row
+  // id, so exact pairing is impossible from the hook surface. The key is
+  // the hook context object -- better-auth hands the same endpoint
+  // context to the before and after hooks of one update -- or, when the
+  // update runs outside an endpoint, the request's LedgerContext.
+  // Keying by request confines pairing to it: concurrent requests in
+  // the same isolate can never cross-pair, and an abandoned capture (a
+  // failed or vetoed update) dies with its request instead of desyncing
+  // the plugin forever. Within one request the queue is FIFO --
+  // multiple updates to the same table in a single request pair in
+  // order, and a veto mid-request can still offset later pairs in THAT
+  // request; the { changed } entry shape keeps the provenance explicit
+  // rather than pretending to be a full before-image. With neither a
+  // hook context nor a ledger context no capture happens and oldData
+  // stays null.
+  const pendingChangeSets = new WeakMap<object, Record<string, Record<string, unknown>[]>>();
+
+  function changeSetKey(ctx: HookContext): object | null {
+    return ctx ?? getLedgerContext();
+  }
 
   for (const table of auditTables) {
     databaseHooks[table] = {
       create: {
-        after: async (data: UserWithId) => {
+        after: async (data: UserWithId, ctx: HookContext) => {
           await audit({
             tableName: table,
             recordId: data.id,
@@ -254,17 +279,17 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
             newData: data as Record<string, unknown>,
             // Self-signup: the created user is the actor when no
             // authenticated context exists (there is no session yet).
-            userId: resolveActor(table === "user" ? data.id : null),
+            userId: resolveActor(ctx, table === "user" ? data.id : null),
           });
         },
       },
       update: {
-        before: async (data: Record<string, unknown>) => {
-          const context = getLedgerContext();
-          if (context) {
-            const byTable = pendingChangeSets.get(context) ?? {};
+        before: async (data: Record<string, unknown>, ctx: HookContext) => {
+          const key = changeSetKey(ctx);
+          if (key) {
+            const byTable = pendingChangeSets.get(key) ?? {};
             (byTable[table] ??= []).push({ ...data });
-            pendingChangeSets.set(context, byTable);
+            pendingChangeSets.set(key, byTable);
           }
           // Return nothing: echoing { data } back would overwrite
           // mutations other before-hooks made -- better-auth merges
@@ -272,21 +297,19 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
           // hook receives the ORIGINAL payload, not the accumulated
           // one. undefined skips the merge entirely.
         },
-        after: async (data: UserWithId) => {
-          const context = getLedgerContext();
-          const changed = context
-            ? (pendingChangeSets.get(context)?.[table]?.shift() ?? null)
-            : null;
+        after: async (data: UserWithId, ctx: HookContext) => {
+          const key = changeSetKey(ctx);
+          const changed = key ? (pendingChangeSets.get(key)?.[table]?.shift() ?? null) : null;
           await audit({
             tableName: table,
             recordId: data.id,
             action: "UPDATE",
             // Not a full before-image (better-auth does not expose the
             // previous row); { changed } is the incoming change set
-            // captured by update.before within this request's context.
+            // captured by update.before within this request.
             oldData: changed ? { changed } : null,
             newData: data as Record<string, unknown>,
-            userId: resolveActor(),
+            userId: resolveActor(ctx),
           });
         },
       },
@@ -303,10 +326,10 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
       //   hook aborts the whole batch.
       // - consumeOneWithHooks (verification tokens): one call with the row
       //   the atomic consume returned.
-      // queueAfterTransactionHook defers the call past the transaction; it
-      // stays in the request's async context, so the actor resolves.
+      // queueAfterTransactionHook defers the call past the transaction;
+      // the hook context is captured before it, so the actor resolves.
       delete: {
-        after: async (data: UserWithId) => {
+        after: async (data: UserWithId, ctx: HookContext) => {
           await audit({
             tableName: table,
             recordId: data.id,
@@ -315,7 +338,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
             newData: null,
             // Matches the soft-delete path: self-service deletion is the
             // common flow, so a deleted user is the fallback actor.
-            userId: resolveActor(table === "user" ? data.id : null),
+            userId: resolveActor(ctx, table === "user" ? data.id : null),
           });
         },
       },
@@ -338,7 +361,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     }
     const hasDeletedBy = "deletedBy" in fields;
 
-    return async (user: User & Record<string, unknown>): Promise<false> => {
+    return async (user: User & Record<string, unknown>, hookCtx: HookContext): Promise<false> => {
       const values = softDeleteValues(null);
       await ctx.adapter.update({
         model: "user",
@@ -355,8 +378,8 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
         oldData: user,
         newData: { ...user, ...values },
         // Self-service deletion is the common flow, so the target is the
-        // fallback actor; an authenticated context (admin) wins.
-        userId: resolveActor(user.id),
+        // fallback actor; an authenticated session (admin) wins.
+        userId: resolveActor(hookCtx, user.id),
       });
       return false;
     };
