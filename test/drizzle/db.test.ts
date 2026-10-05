@@ -597,6 +597,32 @@ describe("createAuditedDb soft-delete audit entries (real SQLite)", () => {
     expect(partial.entries.map((e) => e.recordId)).toEqual(["u2"]);
   });
 
+  test("finally() records the affected row ids and hides the added keys", async () => {
+    const plain = auditedSqlite();
+    let ran = 0;
+    const keyRows = await plain.audited
+      .delete(users)
+      .where(eq(users.id, "u1"))
+      .finally(() => {
+        ran += 1;
+      });
+    await settled();
+    expect(ran).toBe(1);
+    expect(plain.deletedIds()).toEqual(["u1"]);
+    expect(keyRows).toEqual([{ id: "u1" }]);
+    expect(plain.entries.map((e) => e.recordId)).toEqual(["u1"]);
+
+    const selected = auditedSqlite();
+    const names = await selected.audited
+      .delete(users)
+      .where(eq(users.id, "u2"))
+      .returning({ name: users.name })
+      .finally(() => {});
+    await settled();
+    expect(names).toEqual([{ name: "Bo" }]);
+    expect(selected.entries.map((e) => e.recordId)).toEqual(["u2"]);
+  });
+
   test("without a caller returning(), the delete resolves to the affected keys", async () => {
     const { audited } = auditedSqlite();
 

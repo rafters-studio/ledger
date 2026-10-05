@@ -231,7 +231,8 @@ interface ExecutionHooks {
 
 /**
  * Wrap a query builder so that every successful execution -- via direct
- * await, .execute(), .all(), .get(), .run(), .values(), or any chain
+ * await, .catch(), .finally(), .execute(), .all(), .get(), .run(),
+ * .values(), or any chain
  * stage (.where(), .returning(), .prepare()) -- passes its result
  * through hooks.settle. Chain methods return wrapped builders so the
  * observation survives chaining.
@@ -262,13 +263,18 @@ function observeExecution<T extends object>(
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
 
-      // catch must route through the OBSERVED then, not a generic branch:
-      // Drizzle's QueryPromise implements catch as
-      // this.then(undefined, onRejected), and re-observing the promise
-      // catch returns -- which FULFILLS when the handler swallows a
-      // rejection -- would write a false SOFT_DELETE audit entry for a
-      // statement that never executed.
-      if ((prop === "then" || prop === "catch") && typeof value === "function") {
+      // catch and finally must route through the OBSERVED then, not a
+      // generic branch: Drizzle's QueryPromise implements both as
+      // this.then(...) on the unwrapped target, so through the generic
+      // branch finally would execute unobserved (no entry, reserved
+      // aliases leaked), and re-observing the promise catch returns --
+      // which FULFILLS when the handler swallows a rejection -- would
+      // write a false SOFT_DELETE audit entry for a statement that
+      // never executed.
+      if (
+        (prop === "then" || prop === "catch" || prop === "finally") &&
+        typeof value === "function"
+      ) {
         const thenFn: unknown = prop === "then" ? value : Reflect.get(target, "then", receiver);
         if (typeof thenFn === "function") {
           const observedThen = (
@@ -278,9 +284,12 @@ function observeExecution<T extends object>(
             Promise.resolve(
               run(() => new Promise((resolve, reject) => thenFn.call(target, resolve, reject))),
             ).then(onFulfilled, onRejected);
-          return prop === "then"
-            ? observedThen
-            : (onRejected?: (error: unknown) => unknown) => observedThen(undefined, onRejected);
+          if (prop === "then") return observedThen;
+          if (prop === "catch") {
+            return (onRejected?: (error: unknown) => unknown) =>
+              observedThen(undefined, onRejected);
+          }
+          return (onFinally?: () => void) => observedThen().finally(onFinally);
         }
       }
 
