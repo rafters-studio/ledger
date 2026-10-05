@@ -62,9 +62,7 @@ export {
 // Errors
 export {
   AuditTableDeleteError,
-  isSoftDeletePerformed,
   LedgerContextUnavailableError,
   MissingSoftDeleteColumnError,
-  SoftDeletePerformedError,
   UnresolvedSoftDeleteTableError,
 } from "./errors.js";
