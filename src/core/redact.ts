@@ -12,6 +12,15 @@
  * as SUBSTRINGS of the key name: "token" catches accessToken,
  * access_token, refreshToken, idToken; "secret" catches clientSecret;
  * "password" catches passwordHash.
+ *
+ * Substring matching over-redacts on purpose: "code" also catches
+ * postalCode and countryCode, "hash" catches any *Hash field. Losing a
+ * harmless field from an audit payload is the safe direction; storing
+ * an OTP code in clear is not.
+ *
+ * Only key NAMES are inspected. A secret-shaped string (a JWT, a hex
+ * token) under an innocent key passes through; list that key in
+ * extraPatterns.
  */
 export const DEFAULT_SECRET_PATTERNS: readonly string[] = [
   "token",
@@ -19,7 +28,27 @@ export const DEFAULT_SECRET_PATTERNS: readonly string[] = [
   "password",
   "apikey",
   "api_key",
+  "otp",
+  "code",
+  "hash",
+  "salt",
+  "jwt",
+  "credential",
+  "privatekey",
+  "private_key",
+  "authorization",
+  "cookie",
 ];
+
+/**
+ * Columns redacted by TABLE, not by key name, because the name alone
+ * says nothing: better-auth's verification.value holds OTP codes and
+ * reset tokens under the generic name "value". Matched against the
+ * row's top-level keys only.
+ */
+export const TABLE_SECRET_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  verification: ["value"],
+};
 
 /** Replacement value for redacted fields. */
 export const REDACTED_VALUE = "[REDACTED]";
@@ -79,4 +108,30 @@ function redactValue(value: unknown, loweredPatterns: string[]): unknown {
   }
 
   return value;
+}
+
+/**
+ * Redact a row of a named table: first the table's TABLE_SECRET_COLUMNS
+ * (top-level keys, exact name), then every key-name pattern via
+ * redactSensitiveFields.
+ *
+ * @param tableName - The table the row belongs to
+ * @param data - The row payload
+ * @param extraPatterns - Additional key patterns beyond the defaults
+ * @returns Redacted copy; the input is not mutated
+ */
+export function redactTableRow(
+  tableName: string,
+  data: Record<string, unknown> | null,
+  extraPatterns?: readonly string[],
+): Record<string, unknown> | null {
+  const redacted = redactSensitiveFields(data, extraPatterns);
+  const columns = Object.hasOwn(TABLE_SECRET_COLUMNS, tableName)
+    ? TABLE_SECRET_COLUMNS[tableName]
+    : undefined;
+  if (redacted === null || columns === undefined) return redacted;
+  for (const column of columns) {
+    if (Object.hasOwn(redacted, column)) redacted[column] = REDACTED_VALUE;
+  }
+  return redacted;
 }

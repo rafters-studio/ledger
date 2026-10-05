@@ -61,7 +61,7 @@ import { getLedgerContext } from "./core/context.js";
 import type { LedgerContext } from "./core/types.js";
 import { softDeleteValues } from "./core/soft-delete.js";
 import { SoftDeletePerformedError, isSoftDeletePerformed } from "./core/errors.js";
-import { redactSensitiveFields } from "./core/redact.js";
+import { redactTableRow } from "./core/redact.js";
 
 /**
  * Audit entry passed to the writeAuditEntry callback.
@@ -104,14 +104,19 @@ export interface LedgerPluginConfig {
    * and credential password hashes. Redaction strips those fields before
    * any audit write, but auditing 'account' remains opt-in -- enable it
    * only with an actual compliance need.
-   * Session and verification are excluded by default due to high volume.
+   * 'verification' rows carry OTP codes and reset tokens in the
+   * 'value' column. Redaction strips that column by table rule, so
+   * auditing verification is safe, but it stays opt-in. Session is
+   * excluded by default due to high volume.
    */
   auditTables?: ("user" | "account" | "session" | "verification")[];
   /**
    * Additional key patterns to redact beyond DEFAULT_SECRET_PATTERNS
-   * (token/secret/password/apikey/api_key, case-insensitive substring
-   * match). Redaction itself cannot be disabled: if redaction fails,
-   * the audit entry is NOT written.
+   * (token, secret, password, apikey, api_key, otp, code, hash, salt,
+   * jwt, credential, privatekey, private_key, authorization, cookie;
+   * case-insensitive substring match) and TABLE_SECRET_COLUMNS
+   * (verification.value). Redaction itself cannot be disabled: if
+   * redaction fails, the audit entry is NOT written.
    */
   redactPatterns?: readonly string[];
 }
@@ -134,8 +139,8 @@ function redactAuditEntry(
 ): LedgerAuditEntry {
   return {
     ...entry,
-    oldData: redactSensitiveFields(entry.oldData, extraPatterns),
-    newData: redactSensitiveFields(entry.newData, extraPatterns),
+    oldData: redactTableRow(entry.tableName, entry.oldData, extraPatterns),
+    newData: redactTableRow(entry.tableName, entry.newData, extraPatterns),
   };
 }
 

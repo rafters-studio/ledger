@@ -3,6 +3,8 @@ import {
   DEFAULT_SECRET_PATTERNS,
   REDACTED_VALUE,
   redactSensitiveFields,
+  redactTableRow,
+  TABLE_SECRET_COLUMNS,
 } from "../../src/core/redact.js";
 
 describe("redactSensitiveFields", () => {
@@ -94,7 +96,115 @@ describe("redactSensitiveFields", () => {
     expect((result as { isAdmin?: unknown }).isAdmin).toBeUndefined();
   });
 
+  test.each([
+    ["otp", "otpCode"],
+    ["otp", "OTP"],
+    ["code", "code"],
+    ["code", "resetCode"],
+    ["hash", "hash"],
+    ["hash", "backupHash"],
+    ["salt", "salt"],
+    ["salt", "passwordSalt"],
+    ["jwt", "jwt"],
+    ["jwt", "sessionJWT"],
+    ["credential", "credential"],
+    ["credential", "credentialId"],
+    ["privatekey", "privateKey"],
+    ["private_key", "private_key"],
+    ["authorization", "Authorization"],
+    ["cookie", "cookie"],
+    ["cookie", "setCookie"],
+  ])("default pattern %s redacts key %s", (_pattern, key) => {
+    const result = redactSensitiveFields({ [key]: "s3cr3t", keep: "visible" }) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result[key]).toBe(REDACTED_VALUE);
+    expect(result.keep).toBe("visible");
+  });
+
+  test("code matches as a substring, over-redacting postalCode and countryCode", () => {
+    const result = redactSensitiveFields({ postalCode: "94110", countryCode: "US" }) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result.postalCode).toBe(REDACTED_VALUE);
+    expect(result.countryCode).toBe(REDACTED_VALUE);
+  });
+
+  test("string values are not inspected: a secret under an innocent key passes", () => {
+    const result = redactSensitiveFields({ note: "eyJhbGciOiJIUzI1NiJ9.e30.sig" }) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result.note).toBe("eyJhbGciOiJIUzI1NiJ9.e30.sig");
+  });
+
   test("default pattern list is the documented set", () => {
-    expect(DEFAULT_SECRET_PATTERNS).toEqual(["token", "secret", "password", "apikey", "api_key"]);
+    expect(DEFAULT_SECRET_PATTERNS).toEqual([
+      "token",
+      "secret",
+      "password",
+      "apikey",
+      "api_key",
+      "otp",
+      "code",
+      "hash",
+      "salt",
+      "jwt",
+      "credential",
+      "privatekey",
+      "private_key",
+      "authorization",
+      "cookie",
+    ]);
+  });
+});
+
+describe("redactTableRow", () => {
+  test("redacts the verification value column by table rule", () => {
+    const row = {
+      id: "v1",
+      identifier: "email-verification:a@b.co",
+      value: "482913",
+      expiresAt: "2026-10-05T12:00:00Z",
+    };
+    const result = redactTableRow("verification", row);
+
+    expect(result?.value).toBe(REDACTED_VALUE);
+    expect(result?.identifier).toBe("email-verification:a@b.co");
+    expect(result?.id).toBe("v1");
+    expect(row.value).toBe("482913");
+  });
+
+  test("value is not redacted on tables without a column rule", () => {
+    const result = redactTableRow("user", { id: "u1", value: "visible" });
+
+    expect(result?.value).toBe("visible");
+  });
+
+  test("key-name patterns still apply alongside the table rule", () => {
+    const result = redactTableRow("verification", { value: "482913", resetToken: "t" }, ["ssn"]);
+
+    expect(result?.value).toBe(REDACTED_VALUE);
+    expect(result?.resetToken).toBe(REDACTED_VALUE);
+  });
+
+  test("a value column that is absent is not added", () => {
+    const result = redactTableRow("verification", { id: "v1" });
+
+    expect(result).toEqual({ id: "v1" });
+  });
+
+  test("null passes through and inherited table names do not match", () => {
+    expect(redactTableRow("verification", null)).toBeNull();
+    expect(redactTableRow("toString", { value: "visible" })?.value).toBe("visible");
+  });
+
+  test("the table rule set is verification.value", () => {
+    expect(TABLE_SECRET_COLUMNS).toEqual({ verification: ["value"] });
   });
 });

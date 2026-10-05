@@ -67,15 +67,39 @@ export function buildAuth(env: Env) {
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user"]` | Tables to hook for create/update events. Session and verification are excluded by default due to volume. |
+| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user"]` | Tables to hook for create/update events. Session is excluded by default due to volume. Verification is opt-in: its `value` column holds OTP codes and reset tokens, which redaction strips by table rule. |
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | `undefined` | Called for each auditable event. If omitted, audit logging is disabled. |
 | `softDeleteTables` | `"user"[]` | `[]` | When `"user"` is included, the plugin registers a `beforeDelete` hook that logs a `SOFT_DELETE` entry. This does not perform the soft-delete; use `createSoftDeleteCallback` for that. |
 
 ### Redaction (always on)
 
-Every entry's `oldData`/`newData` pass through `redactSensitiveFields` before your `writeAuditEntry` callback sees them. Keys matching `token`, `secret`, `password`, `apikey`, or `api_key` (case-insensitive substrings -- `accessToken`, `refresh_token`, `clientSecret`, `passwordHash` all match) have their values replaced with `"[REDACTED]"`. Add app-specific patterns via `redactPatterns`. Redaction cannot be disabled, and it fails closed: an entry that cannot be redacted is never written. `Date` values pass through intact.
+Every entry's `oldData`/`newData` pass through `redactTableRow` before your `writeAuditEntry` callback sees them. Redaction cannot be disabled, and it fails closed: an entry that cannot be redacted is never written. `Date` values pass through intact. Matching values are replaced with `"[REDACTED]"`.
 
-Defaults do not cover every secret-shaped name (`jwt`, `credential`, `privateKey` are not matched) -- list those in `redactPatterns` if your schema carries them.
+**By key name.** The full default set (`DEFAULT_SECRET_PATTERNS`), matched case-insensitively as substrings of the key at any depth:
+
+| Pattern | Catches, for example |
+| --- | --- |
+| `token` | `accessToken`, `refresh_token`, `idToken` |
+| `secret` | `clientSecret` |
+| `password` | `password`, `passwordHash` |
+| `apikey` | `apiKey`, `ApiKey` |
+| `api_key` | `api_key` |
+| `otp` | `otp`, `otpCode` |
+| `code` | `code`, `resetCode` -- and `postalCode`, `countryCode` |
+| `hash` | `hash`, `backupHash` |
+| `salt` | `salt`, `passwordSalt` |
+| `jwt` | `jwt`, `sessionJWT` |
+| `credential` | `credential`, `credentialId` |
+| `privatekey` | `privateKey` |
+| `private_key` | `private_key` |
+| `authorization` | `Authorization` |
+| `cookie` | `cookie`, `setCookie` |
+
+Substring matching over-redacts on purpose: `code` also strips `postalCode` and `countryCode`. Losing a harmless field from an audit payload is the safe direction. Add app-specific patterns via `redactPatterns`.
+
+**By table.** Some columns hold secrets under a name that says nothing. `TABLE_SECRET_COLUMNS` redacts them by table, top-level key, exact name: `verification.value`, which holds OTP codes and reset tokens. Auditing `verification` is opt-in, and safe when you opt in.
+
+**Not by value.** Redaction inspects key names only, never string contents. A JWT or hex token stored under an innocent key (`note`, `metadata.blob`) passes through. If your schema carries one, list that key in `redactPatterns`.
 
 ### `LedgerAuditEntry` shape
 
