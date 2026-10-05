@@ -4,6 +4,7 @@ import {
   isSoftDeletePerformed,
   LedgerContextUnavailableError,
   MissingSoftDeleteColumnError,
+  MissingSoftDeleteTablesError,
   SoftDeletePerformedError,
   UnresolvedSoftDeleteTableError,
 } from "../../src/core/errors.js";
@@ -20,6 +21,13 @@ describe("hardening error classes", () => {
     const error = new AuditTableDeleteError("audit_log");
     expect(error.code).toBe("AUDIT_TABLE_DELETE");
     expect(error.tableName).toBe("audit_log");
+  });
+
+  test("MissingSoftDeleteTablesError names the migration step", () => {
+    const error = new MissingSoftDeleteTablesError();
+    expect(error.code).toBe("MISSING_SOFT_DELETE_TABLES");
+    expect(error.name).toBe("MissingSoftDeleteTablesError");
+    expect(error.message).toContain("softDeleteTables");
   });
 
   test("existing error classes unchanged", () => {

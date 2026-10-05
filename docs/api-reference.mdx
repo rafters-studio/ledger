@@ -271,16 +271,16 @@ type WithSoftDeleteTimestamp<T> = T & {
 
 ## Drizzle Adapter (`@rafters/ledger/drizzle`)
 
-### `createAuditedDb<T>(db, config?): T`
+### `createAuditedDb<T>(db, config): T`
 
-Monkeypatches the Drizzle instance so `db.delete(table)` transparently becomes a soft-delete UPDATE for any table that has a `deletedAt` column. Tables without `deletedAt`, or tables listed in `hardDeleteTables`, still execute a real DELETE.
+Wraps the Drizzle instance so `db.delete(table)` transparently becomes a soft-delete UPDATE for each table named in `config.softDeleteTables`. Unlisted tables, and tables listed in `hardDeleteTables`, still execute a real DELETE. A listed table without a `deletedAt` column throws `MissingSoftDeleteColumnError`; a config without a `softDeleteTables` array throws `MissingSoftDeleteTablesError` at the first delete.
 
 Returns the same database instance with the patched `delete` method.
 
 | Param | Type | Description |
 |-------|------|-------------|
 | `db` | `T extends WithDeleteAndUpdate` | Drizzle database instance |
-| `config` | `AuditedDbConfig \| undefined` | Optional configuration |
+| `config` | `AuditedDbConfig` | Required; `softDeleteTables: string[]` is required within it (pass `[]` to soft-delete nothing) |
 
 ---
 
@@ -537,7 +537,8 @@ SQLite/Postgres use `CREATE INDEX IF NOT EXISTS`. MySQL omits `IF NOT EXISTS`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `hardDeleteTables` | `string[] \| undefined` | Table names that skip soft-delete and execute real DELETEs |
+| `softDeleteTables` | `string[]` | Required. Table names whose deletes become soft-delete UPDATEs; unlisted tables hard-delete. Pass `[]` for none |
+| `hardDeleteTables` | `string[] \| undefined` | Table names that skip soft-delete and execute real DELETEs, even when listed in `softDeleteTables` |
 | `softDeleteValuesFactory` | `(deletedBy?: string \| null) => { deletedAt: Date; deletedBy: string \| null } \| undefined` | Custom factory for soft-delete values |
 
 ---

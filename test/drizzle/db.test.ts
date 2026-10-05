@@ -1,10 +1,16 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { describe, expect, test, vi } from "vitest";
-import { createAuditedDb, getTableName, hasColumn } from "../../src/drizzle/db.js";
+import {
+  type AuditedDbConfig,
+  createAuditedDb,
+  getTableName,
+  hasColumn,
+} from "../../src/drizzle/db.js";
 import { createLedgerContext, runWithLedgerContext } from "../../src/core/context.js";
 import {
   AuditTableDeleteError,
   MissingSoftDeleteColumnError,
+  MissingSoftDeleteTablesError,
   UnresolvedSoftDeleteTableError,
 } from "../../src/core/errors.js";
 import type { AuditLogEntry } from "../../src/core/types.js";
@@ -108,10 +114,10 @@ describe("createAuditedDb", () => {
     };
   }
 
-  test("converts delete to soft-delete for tables with deletedAt", () => {
+  test("converts delete to soft-delete for listed tables with deletedAt", () => {
     const { db, updateSpy, mockUpdateWithSet, mockUpdateWithWhere } = createMockDb();
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     const result = auditedDb.delete(usersWithSoftDelete);
     result.where({ id: "user-123" });
@@ -125,10 +131,10 @@ describe("createAuditedDb", () => {
     expect(setCall.deletedBy).toBeNull();
   });
 
-  test("uses regular delete for tables without deletedAt", () => {
+  test("uses regular delete for unlisted tables without deletedAt", () => {
     const { db, deleteSpy, updateSpy, mockDeleteWithWhere } = createMockDb();
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     auditedDb.delete(logsWithoutSoftDelete).where({ id: "log-123" });
 
@@ -141,6 +147,7 @@ describe("createAuditedDb", () => {
     const { db, deleteSpy, updateSpy, mockDeleteWithWhere } = createMockDb();
 
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       hardDeleteTables: ["users"],
     });
 
@@ -154,7 +161,7 @@ describe("createAuditedDb", () => {
   test("captures userId from context for deletedBy", () => {
     const { db, mockUpdateWithSet } = createMockDb();
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     const context = createLedgerContext({ userId: "admin-456" });
 
@@ -171,6 +178,7 @@ describe("createAuditedDb", () => {
 
     const customDate = new Date("2024-01-01");
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       softDeleteValuesFactory: (deletedBy) => ({
         deletedAt: customDate,
         deletedBy: deletedBy ?? "system",
@@ -187,7 +195,7 @@ describe("createAuditedDb", () => {
   test("returning() works on soft-delete", async () => {
     const { db, mockUpdateResult } = createMockDb();
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     const result = await auditedDb
       .delete(usersWithSoftDelete)
@@ -201,7 +209,7 @@ describe("createAuditedDb", () => {
   test("execute() works on soft-delete", async () => {
     const { db, mockUpdateResult } = createMockDb();
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     await auditedDb.delete(usersWithSoftDelete).where({ id: "user-123" }).execute();
 
@@ -214,7 +222,7 @@ describe("createAuditedDb", () => {
       id: text("id").primaryKey(),
     });
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     expect(() => auditedDb.delete(auditTable)).toThrow(AuditTableDeleteError);
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -227,7 +235,10 @@ describe("createAuditedDb", () => {
       id: text("id").primaryKey(),
     });
 
-    const auditedDb = createAuditedDb(db, { auditTableName: "my_audit" });
+    const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
+      auditTableName: "my_audit",
+    });
 
     expect(() => auditedDb.delete(customAudit)).toThrow(AuditTableDeleteError);
     expect(deleteSpy).not.toHaveBeenCalled();
@@ -236,7 +247,7 @@ describe("createAuditedDb", () => {
   test("does not mutate the original db instance", () => {
     const { db, deleteSpy, updateSpy } = createMockDb();
 
-    createAuditedDb(db);
+    createAuditedDb(db, { softDeleteTables: ["users"] });
 
     // The original reference keeps original hard-delete behavior.
     db.delete(usersWithSoftDelete);
@@ -262,7 +273,7 @@ describe("createAuditedDb", () => {
       update: vi.fn(() => ({ set })),
     };
 
-    const auditedDb = createAuditedDb(db);
+    const auditedDb = createAuditedDb(db, { softDeleteTables: ["users"] });
 
     const result = await auditedDb.delete(usersWithSoftDelete);
 
@@ -281,7 +292,7 @@ describe("createAuditedDb", () => {
       transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(db)),
     };
 
-    const auditedDb = createAuditedDb(txDb);
+    const auditedDb = createAuditedDb(txDb, { softDeleteTables: ["users"] });
 
     await auditedDb.transaction(async (tx) => {
       (tx as typeof auditedDb).delete(usersWithSoftDelete).where({ id: "user-123" });
@@ -289,6 +300,40 @@ describe("createAuditedDb", () => {
 
     expect(updateSpy).toHaveBeenCalledWith(usersWithSoftDelete);
     expect(mockUpdateWithSet.set).toHaveBeenCalled();
+  });
+
+  test("no config refuses at the first delete with a named error", () => {
+    const { db, deleteSpy, updateSpy } = createMockDb();
+
+    // An untyped caller: the required config is missing entirely.
+    const auditedDb = createAuditedDb(db, undefined as unknown as AuditedDbConfig);
+
+    expect(() => auditedDb.delete(usersWithSoftDelete)).toThrow(MissingSoftDeleteTablesError);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  test("config without softDeleteTables refuses even for tables without deletedAt", () => {
+    const { db, deleteSpy, updateSpy } = createMockDb();
+
+    const auditedDb = createAuditedDb(db, {
+      hardDeleteTables: ["session"],
+    } as unknown as AuditedDbConfig);
+
+    expect(() => auditedDb.delete(logsWithoutSoftDelete)).toThrow(MissingSoftDeleteTablesError);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  test("a table with deletedAt is not converted unless listed", () => {
+    const { db, deleteSpy, updateSpy } = createMockDb();
+
+    const auditedDb = createAuditedDb(db, { softDeleteTables: [] });
+
+    auditedDb.delete(usersWithSoftDelete).where({ id: "u1" });
+
+    expect(deleteSpy).toHaveBeenCalledWith(usersWithSoftDelete);
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 
   test("allowlist mode: listed table converts, unlisted hard-deletes", () => {
@@ -328,6 +373,7 @@ describe("createAuditedDb", () => {
     };
 
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       writeAuditEntry: (entry) => {
         entries.push(entry);
         return Promise.resolve();
@@ -371,6 +417,7 @@ describe("createAuditedDb", () => {
     };
 
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       writeAuditEntry: (entry) => {
         entries.push(entry);
         return Promise.resolve();
@@ -401,6 +448,7 @@ describe("createAuditedDb", () => {
     };
 
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       writeAuditEntry: (entry) => {
         entries.push(entry);
         return Promise.resolve();
@@ -444,6 +492,7 @@ describe("createAuditedDb", () => {
     };
 
     const auditedDb = createAuditedDb(db, {
+      softDeleteTables: ["users"],
       writeAuditEntry: (entry) => {
         entries.push(entry);
         return Promise.resolve();
