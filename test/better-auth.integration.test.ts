@@ -159,69 +159,64 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
     });
   }
 
-  function buildAuth() {
-    const instance = betterAuth({
-      baseURL: BASE_URL,
-      secret: TEST_SECRET,
-      database: drizzleAdapter(db, {
-        provider: "sqlite",
-        schema: { user, session, account, verification },
-      }),
-      emailAndPassword: { enabled: true },
-      rateLimit: { enabled: false },
-      logger: { disabled: true },
-      account: { accountLinking: { enabled: true } },
-      user: {
-        additionalFields: {
-          deletedAt: { type: "date", required: false, input: false },
-          deletedBy: { type: "string", required: false, input: false },
-        },
-        deleteUser: {
-          enabled: true,
-          beforeDelete: createSoftDeleteCallback({
-            db,
-            userTable: user,
-            whereUserId: (userId) => eq(user.id, userId),
-            // The docs recipe, verbatim: feature-detect the mid-1.6 split.
-            revokeSessions: async (userId) => {
-              const ctx = await instance.$context;
-              const ia = ctx.internalAdapter as {
-                deleteUserSessions?: (userId: string) => Promise<void>;
-                deleteSessions: (value: string | string[]) => Promise<void>;
-              };
-              if (ia.deleteUserSessions) {
-                await ia.deleteUserSessions(userId);
-              } else {
-                await ia.deleteSessions(userId);
-              }
-            },
-            writeAuditEntry,
-          }),
-        },
+  const auth = betterAuth({
+    baseURL: BASE_URL,
+    secret: TEST_SECRET,
+    database: drizzleAdapter(db, {
+      provider: "sqlite",
+      schema: { user, session, account, verification },
+    }),
+    emailAndPassword: { enabled: true },
+    rateLimit: { enabled: false },
+    logger: { disabled: true },
+    account: { accountLinking: { enabled: true } },
+    user: {
+      additionalFields: {
+        deletedAt: { type: "date", required: false, input: false },
+        deletedBy: { type: "string", required: false, input: false },
       },
-      // The sign-in gate recipe from the docs.
-      databaseHooks: {
-        session: {
-          create: {
-            before: async (newSession) => {
-              const [u] = await db.select().from(user).where(eq(user.id, newSession.userId));
-              if (u?.deletedAt) {
-                throw new APIError("FORBIDDEN", { message: "Account deleted" });
-              }
-            },
+      deleteUser: {
+        enabled: true,
+        beforeDelete: createSoftDeleteCallback({
+          db,
+          userTable: user,
+          whereUserId: (userId) => eq(user.id, userId),
+          // The docs recipe, verbatim: feature-detect the mid-1.6 split.
+          revokeSessions: async (userId) => {
+            const ctx = await auth.$context;
+            const ia = ctx.internalAdapter as {
+              deleteUserSessions?: (userId: string) => Promise<void>;
+              deleteSessions: (value: string | string[]) => Promise<void>;
+            };
+            if (ia.deleteUserSessions) {
+              await ia.deleteUserSessions(userId);
+            } else {
+              await ia.deleteSessions(userId);
+            }
+          },
+          writeAuditEntry,
+        }),
+      },
+    },
+    // The sign-in gate recipe from the docs.
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (newSession) => {
+            const [u] = await db.select().from(user).where(eq(user.id, newSession.userId));
+            if (u?.deletedAt) {
+              throw new APIError("FORBIDDEN", { message: "Account deleted" });
+            }
           },
         },
       },
-      plugins: [
-        ledgerPlugin({ auditTables: ["user", "account"], writeAuditEntry }),
-        admin(),
-        testUtils(),
-      ],
-    });
-    return instance;
-  }
-
-  const auth = buildAuth();
+    },
+    plugins: [
+      ledgerPlugin({ auditTables: ["user", "account"], writeAuditEntry }),
+      admin(),
+      testUtils(),
+    ],
+  });
 
   /**
    * The ledger-context middleware from the docs, in front of auth.handler:
