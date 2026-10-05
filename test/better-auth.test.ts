@@ -632,6 +632,28 @@ describe("createDeleteAuditCallback", () => {
     });
   });
 
+  test("attributes the delete to the ledger context actor, not the target (#43)", async () => {
+    const entries: LedgerAuditEntry[] = [];
+    const callback = createDeleteAuditCallback((entry) => {
+      entries.push(entry);
+      return Promise.resolve();
+    });
+    const user = {
+      id: "user-1",
+      email: "x@test.com",
+      name: "X",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      emailVerified: false,
+      image: null,
+    };
+
+    await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), () => callback(user));
+    await callback(user);
+
+    expect(entries.map((e) => e.userId)).toEqual(["admin-1", "user-1"]);
+  });
+
   test("redacts secret fields in the delete audit entry", async () => {
     const entries: LedgerAuditEntry[] = [];
     const callback = createDeleteAuditCallback((entry) => {
@@ -798,6 +820,37 @@ describe("ledgerPlugin softDeleteUser", () => {
     );
 
     expect(entries[0]?.userId).toBe("admin-1");
+  });
+
+  test("an admin soft-deleting a user records the admin as userId and deletedBy (#43)", async () => {
+    const { before, entries, update } = initWith(["deletedAt", "deletedBy"]);
+
+    await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), () =>
+      before(user, null),
+    );
+
+    expect(update.mock.calls[0]?.[0].update.deletedBy).toBe("admin-1");
+    expect(entries[0]?.userId).toBe("admin-1");
+    expect(entries[0]?.newData?.deletedBy).toBe("admin-1");
+  });
+
+  test("the hook context's session user is the deletedBy actor (#43)", async () => {
+    const { before, entries, update } = initWith(["deletedAt", "deletedBy"]);
+
+    await before(user, { context: { session: { user: { id: "admin-1" } } } });
+
+    expect(update.mock.calls[0]?.[0].update.deletedBy).toBe("admin-1");
+    expect(entries[0]?.userId).toBe("admin-1");
+  });
+
+  test("self-service with no context records the user as userId and deletedBy null (#43)", async () => {
+    const { before, entries, update } = initWith(["deletedAt", "deletedBy"]);
+
+    await before(user, null);
+
+    expect(update.mock.calls[0]?.[0].update.deletedBy).toBeNull();
+    expect(entries[0]?.userId).toBe("user-1");
+    expect(entries[0]?.newData?.deletedBy).toBeNull();
   });
 
   test("an adapter failure propagates and writes no entry", async () => {

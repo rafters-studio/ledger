@@ -149,6 +149,37 @@ type HookContext =
   | undefined;
 
 /**
+ * Resolve the acting principal for an audit entry, in order:
+ *
+ * 1. The hook context's session user (ctx.context.session.user.id).
+ * 2. The ledger context's userId (runWithLedgerContext), for writes
+ *    outside an endpoint or from an endpoint with no session.
+ * 3. The fallback: the target row's own id, passed only for user
+ *    self-signup and user deletion, where the target is the actor.
+ *
+ * Otherwise the actor is unknown (null) -- NEVER default to the target
+ * row's id, which recorded an admin banning a user as the user acting
+ * on themselves.
+ *
+ * Which hooks carry a session (read from better-auth 1.7.7 source;
+ * db/with-hooks passes tryGetCurrentAuthEndpointContext() to every
+ * create, update, and delete hook): ctx.context.session is set by
+ * getSessionFromCtx, which the session middlewares (sessionMiddleware,
+ * sensitiveSessionMiddleware, freshSessionMiddleware, the admin
+ * plugin's adminMiddleware) and some route bodies call. So update and
+ * delete hooks from an authenticated route carry it: updateUser,
+ * admin updateUser/setRole/banUser, unlinkAccount, revokeSession(s),
+ * deleteUser, and verify-email when the caller is signed in.
+ * create.after on user during sign-up does not: sign-up and sign-in
+ * run only formCsrfMiddleware and never read the session, and the new
+ * session is created after the user. ctx is undefined when
+ * internalAdapter is called outside an endpoint.
+ */
+function resolveActor(ctx: HookContext, fallback: string | null = null): string | null {
+  return ctx?.context?.session?.user?.id ?? getLedgerContext()?.userId ?? fallback;
+}
+
+/**
  * Better Auth plugin for audit logging.
  *
  * Features:
@@ -207,37 +238,6 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     } catch (error) {
       safeLog("Failed to write audit entry", error);
     }
-  }
-
-  /**
-   * Resolve the acting principal for an audit entry, in order:
-   *
-   * 1. The hook context's session user (ctx.context.session.user.id).
-   * 2. The ledger context's userId (runWithLedgerContext), for writes
-   *    outside an endpoint or from an endpoint with no session.
-   * 3. The fallback: the target row's own id, passed only for user
-   *    self-signup and user deletion, where the target is the actor.
-   *
-   * Otherwise the actor is unknown (null) -- NEVER default to the target
-   * row's id, which recorded an admin banning a user as the user acting
-   * on themselves.
-   *
-   * Which hooks carry a session (read from better-auth 1.7.7 source;
-   * db/with-hooks passes tryGetCurrentAuthEndpointContext() to every
-   * create, update, and delete hook): ctx.context.session is set by
-   * getSessionFromCtx, which the session middlewares (sessionMiddleware,
-   * sensitiveSessionMiddleware, freshSessionMiddleware, the admin
-   * plugin's adminMiddleware) and some route bodies call. So update and
-   * delete hooks from an authenticated route carry it: updateUser,
-   * admin updateUser/setRole/banUser, unlinkAccount, revokeSession(s),
-   * deleteUser, and verify-email when the caller is signed in.
-   * create.after on user during sign-up does not: sign-up and sign-in
-   * run only formCsrfMiddleware and never read the session, and the new
-   * session is created after the user. ctx is undefined when
-   * internalAdapter is called outside an endpoint.
-   */
-  function resolveActor(ctx: HookContext, fallback: string | null = null): string | null {
-    return ctx?.context?.session?.user?.id ?? getLedgerContext()?.userId ?? fallback;
   }
 
   // Build databaseHooks based on audited tables
@@ -362,7 +362,12 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     const hasDeletedBy = "deletedBy" in fields;
 
     return async (user: User & Record<string, unknown>, hookCtx: HookContext): Promise<false> => {
-      const values = softDeleteValues(null);
+      // deletedBy is the actor a context names (the session user, else
+      // the ledger context) and null when none does. The audit entry
+      // falls back to the target for self-service, as every user delete
+      // does; the column records only a known actor.
+      const actor = resolveActor(hookCtx);
+      const values = softDeleteValues(actor);
       await ctx.adapter.update({
         model: "user",
         where: [{ field: "id", value: user.id }],
@@ -377,9 +382,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
         action: "SOFT_DELETE",
         oldData: user,
         newData: { ...user, ...values },
-        // Self-service deletion is the common flow, so the target is the
-        // fallback actor; an authenticated session (admin) wins.
-        userId: resolveActor(hookCtx, user.id),
+        userId: actor ?? user.id,
       });
       return false;
     };
@@ -453,7 +456,10 @@ export function createDeleteAuditCallback(
           action: "DELETE", // Hard delete action (user was permanently deleted)
           oldData: user as unknown as Record<string, unknown>,
           newData: null,
-          userId: user.id,
+          // afterDelete receives no hook context, so the ledger context
+          // is the only source of an actor other than the target, which
+          // stands in for self-service.
+          userId: resolveActor(null, user.id),
         },
         redactPatterns,
       );

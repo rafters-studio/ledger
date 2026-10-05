@@ -590,7 +590,7 @@ Integration with [better-auth](https://www.better-auth.com/) 1.7 and later. The 
 
 ### `ledgerPlugin(config?): BetterAuthPlugin`
 
-Returns a better-auth plugin that registers `databaseHooks` for create, update, and delete on the configured tables; each hard delete writes a DELETE entry with the redacted row as `oldData`. With `softDeleteUser: true` it also registers `user.delete.before`, which sets `deletedAt` (and `deletedBy` when declared) through better-auth's adapter, writes a SOFT_DELETE entry, and returns `false` so better-auth skips the row delete. Throws at init if the user schema has no `deletedAt` field.
+Returns a better-auth plugin that registers `databaseHooks` for create, update, and delete on the configured tables; each hard delete writes a DELETE entry with the redacted row as `oldData`. With `softDeleteUser: true` it also registers `user.delete.before`, which sets `deletedAt` (and `deletedBy`, the resolved actor, when declared) through better-auth's adapter, writes a SOFT_DELETE entry, and returns `false` so better-auth skips the row delete. Throws at init if the user schema has no `deletedAt` field.
 
 | Param | Type | Description |
 |-------|------|-------------|
