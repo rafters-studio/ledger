@@ -2,11 +2,8 @@ import { describe, expect, test, vi } from "vitest";
 import { createLedgerContext, runWithLedgerContext } from "../src/core/context.js";
 import {
   createDeleteAuditCallback,
-  createSoftDeleteCallback,
-  isSoftDeletePerformed,
   type LedgerAuditEntry,
   ledgerPlugin,
-  SoftDeletePerformedError,
 } from "../src/better-auth.js";
 
 describe("ledgerPlugin", () => {
@@ -294,40 +291,13 @@ describe("ledgerPlugin", () => {
     expect(result?.options?.databaseHooks?.account).toBeUndefined();
   });
 
-  test("does not include user delete hooks when softDeleteTables not configured", () => {
+  test("registers no delete hook and no deleteUser option without softDeleteUser", () => {
     const plugin = ledgerPlugin();
 
     const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
 
-    expect(result?.options?.user?.deleteUser).toBeUndefined();
-  });
-
-  test("includes user delete hooks when softDeleteTables contains user", async () => {
-    const entries: LedgerAuditEntry[] = [];
-    const plugin = ledgerPlugin({
-      softDeleteTables: ["user"],
-      writeAuditEntry: (entry) => {
-        entries.push(entry);
-        return Promise.resolve();
-      },
-    });
-
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
-
-    expect(result?.options?.user?.deleteUser?.beforeDelete).toBeDefined();
-
-    // Call the beforeDelete hook
-    await result?.options?.user?.deleteUser?.beforeDelete?.({
-      id: "user-789",
-      email: "deleted@test.com",
-    });
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      tableName: "user",
-      action: "SOFT_DELETE",
-      recordId: "user-789",
-    });
+    expect(result?.options?.databaseHooks?.user?.delete).toBeUndefined();
+    expect(result?.options?.user).toBeUndefined();
   });
 
   test("fail-closed: an entry that cannot be redacted is never written", async () => {
@@ -496,269 +466,6 @@ describe("ledgerPlugin", () => {
   });
 });
 
-describe("createSoftDeleteCallback", () => {
-  test("performs soft-delete and throws", async () => {
-    const mockUpdate = vi.fn().mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    });
-
-    const mockDb = { update: mockUpdate };
-    const mockTable = {
-      id: { equals: vi.fn() },
-      deletedAt: {},
-      deletedBy: {},
-    };
-
-    const callback = createSoftDeleteCallback({
-      db: mockDb,
-      userTable: mockTable,
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockResolvedValue(undefined),
-    });
-
-    const user = {
-      id: "user-123",
-      email: "test@test.com",
-      name: "Test",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      emailVerified: false,
-      image: null,
-    };
-
-    await expect(callback(user)).rejects.toThrow("User soft-deleted successfully");
-
-    // Verify soft-delete was called
-    expect(mockUpdate).toHaveBeenCalledWith(mockTable);
-    const setFn = mockUpdate.mock.results[0]?.value?.set;
-    expect(setFn).toHaveBeenCalled();
-    const setArg = setFn.mock.calls[0]?.[0];
-    expect(setArg?.deletedAt).toBeInstanceOf(Date);
-    expect(setArg?.deletedBy).toBeNull();
-  });
-
-  test("logs audit entry if provided", async () => {
-    const entries: LedgerAuditEntry[] = [];
-    const mockDb = {
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const callback = createSoftDeleteCallback({
-      db: mockDb,
-      userTable: { id: {}, deletedAt: {}, deletedBy: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockResolvedValue(undefined),
-      writeAuditEntry: (entry) => {
-        entries.push(entry);
-        return Promise.resolve();
-      },
-    });
-
-    const user = {
-      id: "user-456",
-      email: "audit@test.com",
-      name: "Audit",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      emailVerified: false,
-      image: null,
-    };
-
-    try {
-      await callback(user);
-    } catch {
-      // Expected to throw
-    }
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      tableName: "user",
-      recordId: "user-456",
-      action: "SOFT_DELETE",
-    });
-  });
-
-  test("redacts secret fields in the soft-delete audit entry", async () => {
-    const entries: LedgerAuditEntry[] = [];
-    const mockDb = {
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const callback = createSoftDeleteCallback({
-      db: mockDb,
-      userTable: { id: {}, deletedAt: {}, deletedBy: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockResolvedValue(undefined),
-      writeAuditEntry: (entry) => {
-        entries.push(entry);
-        return Promise.resolve();
-      },
-    });
-
-    const user = {
-      id: "user-1",
-      email: "x@test.com",
-      name: "X",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      emailVerified: false,
-      image: null,
-      twoFactorSecret: "otp-secret-value",
-    };
-
-    try {
-      await callback(user as unknown as Parameters<typeof callback>[0]);
-    } catch {
-      // Expected to throw SoftDeletePerformedError
-    }
-
-    expect(JSON.stringify(entries[0])).not.toContain("otp-secret-value");
-  });
-
-  test("throws SoftDeletePerformedError with correct properties", async () => {
-    const mockDb = {
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const callback = createSoftDeleteCallback({
-      db: mockDb,
-      userTable: { id: {}, deletedAt: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockResolvedValue(undefined),
-    });
-
-    const user = {
-      id: "user-789",
-      email: "props@test.com",
-      name: "Props",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      emailVerified: false,
-      image: null,
-    };
-
-    try {
-      await callback(user);
-      expect.fail("Should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(SoftDeletePerformedError);
-      expect((error as SoftDeletePerformedError).code).toBe("SOFT_DELETE_PERFORMED");
-      expect((error as SoftDeletePerformedError).softDeleted).toBe(true);
-      expect((error as SoftDeletePerformedError).userId).toBe("user-789");
-    }
-  });
-});
-
-describe("createSoftDeleteCallback session revocation", () => {
-  const user = {
-    id: "user-1",
-    email: "x@test.com",
-    name: "X",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    emailVerified: false,
-    image: null,
-  };
-
-  function mockDbWithSpies() {
-    const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn().mockReturnValue({ where });
-    const update = vi.fn().mockReturnValue({ set });
-    return { db: { update }, update, set, where };
-  }
-
-  test("revokes sessions BEFORE the soft-delete update", async () => {
-    const order: string[] = [];
-    const { db, update } = mockDbWithSpies();
-    update.mockImplementation(() => {
-      order.push("update");
-      return { set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) };
-    });
-
-    const callback = createSoftDeleteCallback({
-      db,
-      userTable: { id: {}, deletedAt: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockImplementation(async () => {
-        order.push("revoke");
-      }),
-    });
-
-    await expect(callback(user)).rejects.toThrow(SoftDeletePerformedError);
-    expect(order).toEqual(["revoke", "update"]);
-  });
-
-  test("revocation failure aborts: no update, no success signal", async () => {
-    const { db, update } = mockDbWithSpies();
-
-    const callback = createSoftDeleteCallback({
-      db,
-      userTable: { id: {}, deletedAt: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions: vi.fn().mockRejectedValue(new Error("KV unavailable")),
-    });
-
-    await expect(callback(user)).rejects.toThrow("KV unavailable");
-    // NOT the success error
-    try {
-      await callback(user);
-    } catch (error) {
-      expect(isSoftDeletePerformed(error)).toBe(false);
-    }
-    expect(update).not.toHaveBeenCalled();
-  });
-
-  test("update failure after successful revocation rethrows the real error", async () => {
-    const { db, update } = mockDbWithSpies();
-    update.mockImplementation(() => ({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockRejectedValue(new Error("D1 write failed")),
-      }),
-    }));
-
-    const revokeSessions = vi.fn().mockResolvedValue(undefined);
-    const callback = createSoftDeleteCallback({
-      db,
-      userTable: { id: {}, deletedAt: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions,
-    });
-
-    await expect(callback(user)).rejects.toThrow("D1 write failed");
-    expect(revokeSessions).toHaveBeenCalledWith("user-1");
-  });
-
-  test("passes the user id to revokeSessions", async () => {
-    const { db } = mockDbWithSpies();
-    const revokeSessions = vi.fn().mockResolvedValue(undefined);
-
-    const callback = createSoftDeleteCallback({
-      db,
-      userTable: { id: {}, deletedAt: {} },
-      whereUserId: (userId) => ({ id: userId }),
-      revokeSessions,
-    });
-
-    await expect(callback(user)).rejects.toThrow(SoftDeletePerformedError);
-    expect(revokeSessions).toHaveBeenCalledTimes(1);
-    expect(revokeSessions).toHaveBeenCalledWith("user-1");
-  });
-});
-
 describe("createDeleteAuditCallback", () => {
   test("logs audit entry without throwing", async () => {
     const entries: LedgerAuditEntry[] = [];
@@ -871,50 +578,128 @@ describe("createDeleteAuditCallback", () => {
   });
 });
 
-describe("SoftDeletePerformedError", () => {
-  test("has correct properties", () => {
-    const error = new SoftDeletePerformedError("user-123");
+describe("ledgerPlugin softDeleteUser", () => {
+  type PluginInit = NonNullable<ReturnType<typeof ledgerPlugin>["init"]>;
 
-    expect(error.name).toBe("SoftDeletePerformedError");
-    expect(error.message).toBe("User soft-deleted successfully");
-    expect(error.code).toBe("SOFT_DELETE_PERFORMED");
-    expect(error.softDeleted).toBe(true);
-    expect(error.userId).toBe("user-123");
+  function fakeContext(fields: string[], update = vi.fn().mockResolvedValue(null)) {
+    const ctx = {
+      tables: { user: { fields: Object.fromEntries(fields.map((f) => [f, { type: "string" }])) } },
+      adapter: { update },
+    };
+    return { ctx: ctx as unknown as Parameters<PluginInit>[0], update };
+  }
+
+  function initWith(fields: string[], update?: ReturnType<typeof vi.fn>) {
+    const entries: LedgerAuditEntry[] = [];
+    const plugin = ledgerPlugin({
+      softDeleteUser: true,
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+    const fake = fakeContext(fields, update);
+    const result = plugin.init?.(fake.ctx);
+    const before = result?.options?.databaseHooks?.user?.delete?.before;
+    if (!before) throw new Error("softDeleteUser registered no user delete.before hook");
+    return { before, entries, update: fake.update, result };
+  }
+
+  const user = {
+    id: "user-1",
+    email: "x@test.com",
+    name: "X",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    emailVerified: false,
+    image: null,
+    twoFactorSecret: "otp-secret-value",
+  };
+
+  test("sets deletedAt and deletedBy through the adapter and vetoes the row delete", async () => {
+    const { before, update } = initWith(["deletedAt", "deletedBy"]);
+
+    await expect(before(user, null)).resolves.toBe(false);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const [call] = update.mock.calls;
+    expect(call?.[0]).toMatchObject({
+      model: "user",
+      where: [{ field: "id", value: "user-1" }],
+      update: { deletedBy: null },
+    });
+    expect(call?.[0].update.deletedAt).toBeInstanceOf(Date);
   });
-});
 
-describe("isSoftDeletePerformed", () => {
-  test("returns true for SoftDeletePerformedError", () => {
-    const error = new SoftDeletePerformedError("user-123");
-    expect(isSoftDeletePerformed(error)).toBe(true);
+  test("omits deletedBy when the user schema does not declare it", async () => {
+    const { before, update } = initWith(["deletedAt"]);
+
+    await before(user, null);
+
+    expect(Object.keys(update.mock.calls[0]?.[0].update)).toEqual(["deletedAt"]);
   });
 
-  test("returns true for error with matching properties", () => {
-    const error = new Error("User soft-deleted");
-    (error as Error & { code: string }).code = "SOFT_DELETE_PERFORMED";
-    (error as Error & { softDeleted: boolean }).softDeleted = true;
+  test("writes one redacted SOFT_DELETE entry", async () => {
+    const { before, entries } = initWith(["deletedAt"]);
 
-    expect(isSoftDeletePerformed(error)).toBe(true);
+    await before(user, null);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      tableName: "user",
+      recordId: "user-1",
+      action: "SOFT_DELETE",
+      userId: "user-1",
+    });
+    expect(entries[0]?.newData?.deletedAt).toBeInstanceOf(Date);
+    expect(JSON.stringify(entries[0])).not.toContain("otp-secret-value");
   });
 
-  test("returns false for regular errors", () => {
-    const error = new Error("Regular error");
-    expect(isSoftDeletePerformed(error)).toBe(false);
+  test("attributes the entry to the authenticated actor from ledger context", async () => {
+    const { before, entries } = initWith(["deletedAt"]);
+
+    await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), () =>
+      before(user, null),
+    );
+
+    expect(entries[0]?.userId).toBe("admin-1");
   });
 
-  test("returns false for errors with wrong code", () => {
-    const error = new Error("Wrong code");
-    (error as Error & { code: string }).code = "WRONG_CODE";
-    (error as Error & { softDeleted: boolean }).softDeleted = true;
+  test("an adapter failure propagates and writes no entry", async () => {
+    const { before, entries } = initWith(
+      ["deletedAt"],
+      vi.fn().mockRejectedValue(new Error("db down")),
+    );
 
-    expect(isSoftDeletePerformed(error)).toBe(false);
+    await expect(before(user, null)).rejects.toThrow("db down");
+    expect(entries).toHaveLength(0);
   });
 
-  test("returns false for non-errors", () => {
-    expect(isSoftDeletePerformed(null)).toBe(false);
-    expect(isSoftDeletePerformed(undefined)).toBe(false);
-    expect(isSoftDeletePerformed("string")).toBe(false);
-    expect(isSoftDeletePerformed(123)).toBe(false);
-    expect(isSoftDeletePerformed({})).toBe(false);
+  test("keeps the user create and update audit hooks alongside the delete hook", () => {
+    const { result } = initWith(["deletedAt"]);
+    const userHooks = result?.options?.databaseHooks?.user;
+
+    expect(userHooks?.create?.after).toBeDefined();
+    expect(userHooks?.update?.after).toBeDefined();
+  });
+
+  test("one plugin value initialized twice keeps each hook on its own adapter", async () => {
+    const plugin = ledgerPlugin({ softDeleteUser: true });
+    const first = fakeContext(["deletedAt"]);
+    const second = fakeContext(["deletedAt"]);
+    // better-auth keeps the hooks object and looks the hook up at delete time.
+    const firstHooks = plugin.init?.(first.ctx)?.options?.databaseHooks;
+    plugin.init?.(second.ctx);
+
+    await firstHooks?.user?.delete?.before?.(user, null);
+
+    expect(first.update).toHaveBeenCalledTimes(1);
+    expect(second.update).not.toHaveBeenCalled();
+  });
+
+  test("init throws when the user schema has no deletedAt field", () => {
+    const plugin = ledgerPlugin({ softDeleteUser: true });
+
+    expect(() => plugin.init?.(fakeContext(["deletedBy"]).ctx)).toThrow(/deletedAt/);
   });
 });

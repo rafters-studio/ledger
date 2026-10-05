@@ -6,7 +6,7 @@
 |---|---|
 | `@rafters/ledger` | Core: context, pure soft-delete helpers, pure audit entry construction, GDPR utilities, types |
 | `@rafters/ledger/drizzle` | Drizzle adapter: schema, `createAuditedDb`, query filters, manual log functions, `AuditLogger` |
-| `@rafters/ledger/better-auth` | better-auth integration: `ledgerPlugin`, `createSoftDeleteCallback`, `createDeleteAuditCallback` |
+| `@rafters/ledger/better-auth` | better-auth 1.7+ integration: `ledgerPlugin`, `createDeleteAuditCallback` |
 | `@rafters/ledger/kysely` | Kysely plugin for SQLite and D1: `ledger`, `LedgerKyselyPlugin`, error classes |
 
 Dialect-specific column definitions live at sub-subpaths of the Drizzle adapter:
@@ -584,13 +584,13 @@ Shape of the object passed to `writeAuditEntry` in `AuditLogger`.
 
 ## Better Auth (`@rafters/ledger/better-auth`)
 
-Integration with [better-auth](https://www.better-auth.com/). The plugin provides audit logging via `databaseHooks`. Soft-delete behavior requires `createSoftDeleteCallback` wired separately into `user.deleteUser.beforeDelete`.
+Integration with [better-auth](https://www.better-auth.com/) 1.7 and later. The plugin provides audit logging via `databaseHooks` and, with `softDeleteUser: true`, soft delete of the user row via `databaseHooks.user.delete.before`.
 
 ---
 
 ### `ledgerPlugin(config?): BetterAuthPlugin`
 
-Returns a better-auth plugin that registers `databaseHooks` for create and update on the configured tables. Optionally logs a SOFT_DELETE audit entry before user deletion.
+Returns a better-auth plugin that registers `databaseHooks` for create and update on the configured tables. With `softDeleteUser: true` it also registers `user.delete.before`, which sets `deletedAt` (and `deletedBy` when declared) through better-auth's adapter, writes a SOFT_DELETE entry, and returns `false` so better-auth skips the row delete. Throws at init if the user schema has no `deletedAt` field.
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -598,48 +598,13 @@ Returns a better-auth plugin that registers `databaseHooks` for create and updat
 
 ---
 
-### `createSoftDeleteCallback(options): (user, request?) => Promise<void>`
-
-Returns a `beforeDelete` callback that performs a soft-delete UPDATE on the user table and then throws `SoftDeletePerformedError` to prevent the hard delete. Catch the error with `isSoftDeletePerformed()` to treat it as success.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `options.db` | `{ update: (table) => unknown }` | Drizzle instance with update |
-| `options.userTable` | `{ id: Column; deletedAt: Column; deletedBy?: Column }` | The user table |
-| `options.whereUserId` | `(userId: string) => SQL` | Builds the WHERE clause; e.g. `(id) => eq(users.id, id)` |
-| `options.writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void> \| undefined` | Optional audit callback |
-
----
-
 ### `createDeleteAuditCallback(writeAuditEntry): (user, request?) => Promise<void>`
 
-Returns an `afterDelete` callback that logs a DELETE audit entry without interfering with the delete. Use this when you want audit trail for hard deletes.
+Returns an `afterDelete` callback that logs a DELETE audit entry without interfering with the delete. Use this when you want audit trail for hard deletes. Do not combine it with `softDeleteUser`: `afterDelete` still runs after a soft delete.
 
 | Param | Type | Description |
 |-------|------|-------------|
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | Callback to write the audit entry |
-
----
-
-### `isSoftDeletePerformed(error): error is SoftDeletePerformedError`
-
-Type guard. Returns `true` if `error` is a `SoftDeletePerformedError` or has `code === "SOFT_DELETE_PERFORMED"` and `softDeleted === true`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `error` | `unknown` | Any caught value |
-
----
-
-### `class SoftDeletePerformedError extends Error`
-
-Thrown by `createSoftDeleteCallback` to interrupt the hard delete after a successful soft-delete. Not an actual error condition.
-
-| Property | Type | Value |
-|----------|------|-------|
-| `code` | `"SOFT_DELETE_PERFORMED"` | Discriminant for `isSoftDeletePerformed` |
-| `softDeleted` | `true` | Always `true` |
-| `userId` | `string` | ID of the soft-deleted user |
 
 ---
 
@@ -648,7 +613,8 @@ Thrown by `createSoftDeleteCallback` to interrupt the hard delete after a succes
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `auditTables` | `("user" \| "account" \| "session" \| "verification")[] \| undefined` | `["user"]` | Tables to register create/update hooks on |
-| `softDeleteTables` | `"user"[] \| undefined` | `[]` | Tables for which to log a SOFT_DELETE entry before deletion; currently only `"user"` is supported |
+| `softDeleteUser` | `boolean \| undefined` | `false` | Soft-delete the user row via `user.delete.before` returning `false`. Requires a `deletedAt` field on the better-auth user schema |
+| `redactPatterns` | `readonly string[] \| undefined` | — | Extra key patterns to redact; redaction itself is always on |
 | `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void> \| undefined` | — | Callback invoked for each audit entry; audit logging disabled if omitted |
 
 ---
@@ -665,15 +631,6 @@ Thrown by `createSoftDeleteCallback` to interrupt the hard delete after a succes
 | `userId` | `string \| null` | User performing the action; for `account` hooks this is `null` |
 
 ---
-
-### Type: `SoftDeleteCallbackOptions`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `db` | `{ update: (table) => unknown }` | Drizzle instance |
-| `userTable` | `{ id: Column; deletedAt: Column; deletedBy?: Column }` | User table with soft-delete columns |
-| `whereUserId` | `(userId: string) => SQL` | WHERE clause builder |
-| `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void> \| undefined` | Optional audit callback |
 
 ### `redactSensitiveFields(data, extraPatterns?)`
 

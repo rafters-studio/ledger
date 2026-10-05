@@ -1,52 +1,27 @@
 /**
- * Drizzle Ledger Better Auth Plugin
+ * Ledger Better Auth Plugin
  *
- * Integrates audit logging with better-auth via databaseHooks.
- *
- * For soft-delete functionality, use createSoftDeleteCallback with
- * the user.deleteUser.beforeDelete option.
+ * Audit logging and user soft delete for better-auth 1.7+, wired through
+ * databaseHooks. No ORM handle: the plugin writes through better-auth's
+ * own adapter, so it works with any better-auth database adapter.
  *
  * @example
  * ```typescript
  * import { betterAuth } from 'better-auth';
- * import { ledgerPlugin, createSoftDeleteCallback } from '@rafters/ledger/better-auth-plugin';
- * import { eq } from 'drizzle-orm';
+ * import { ledgerPlugin } from '@rafters/ledger/better-auth';
  *
  * export const auth = betterAuth({
- *   database: drizzle(env.DB),
+ *   database: drizzleAdapter(db, { provider: 'sqlite' }),
  *   user: {
- *     deleteUser: {
- *       enabled: true,
- *       // Use createSoftDeleteCallback for actual soft-delete behavior
- *       beforeDelete: createSoftDeleteCallback({
- *         db,
- *         userTable: users,
- *         whereUserId: (userId) => eq(users.id, userId),
- *         revokeSessions: async (userId) => {
- *           // Feature-detect: better-auth split the internal session
- *           // API mid-1.6 (deleteUserSessions(userId) vs the pre-split
- *           // deleteSessions(userId)); on post-split versions a userId
- *           // passed to deleteSessions SILENTLY DELETES NOTHING. The
- *           // local type widening exists because the two better-auth
- *           // type generations disagree -- it keeps both branches
- *           // compiling on either version.
- *           const ctx = await auth.$context;
- *           const ia = ctx.internalAdapter as {
- *             deleteUserSessions?: (userId: string) => Promise<void>;
- *             deleteSessions: (value: string | string[]) => Promise<void>;
- *           };
- *           if (ia.deleteUserSessions) {
- *             await ia.deleteUserSessions(userId);
- *           } else {
- *             await ia.deleteSessions(userId);
- *           }
- *         },
- *       }),
+ *     additionalFields: {
+ *       deletedAt: { type: 'date', required: false, input: false },
+ *       deletedBy: { type: 'string', required: false, input: false },
  *     },
+ *     deleteUser: { enabled: true },
  *   },
  *   plugins: [
- *     // Plugin provides audit logging for create/update via databaseHooks
  *     ledgerPlugin({
+ *       softDeleteUser: true,
  *       writeAuditEntry: async (entry) => {
  *         await db.insert(auditLog).values({ ...entry, id: uuidv7() });
  *       },
@@ -56,11 +31,10 @@
  * ```
  */
 
-import type { BetterAuthPlugin, User } from "better-auth";
+import type { AuthContext, BetterAuthPlugin, User } from "better-auth";
 import { getLedgerContext } from "./core/context.js";
 import type { LedgerContext } from "./core/types.js";
 import { softDeleteValues } from "./core/soft-delete.js";
-import { SoftDeletePerformedError, isSoftDeletePerformed } from "./core/errors.js";
 import { redactTableRow } from "./core/redact.js";
 
 /**
@@ -86,12 +60,25 @@ export interface LedgerAuditEntry {
  */
 export interface LedgerPluginConfig {
   /**
-   * Tables to log delete audit entries for.
-   * Currently only 'user' is supported (better-auth only exposes user deleteUser hooks).
-   * Note: This only logs audit entries; to actually perform soft-delete,
-   * use createSoftDeleteCallback with user.deleteUser.beforeDelete.
+   * Soft-delete the user row instead of deleting it.
+   *
+   * Registers databaseHooks.user.delete.before: it sets deletedAt (and
+   * deletedBy when the user schema declares it) through better-auth's
+   * adapter, writes a SOFT_DELETE audit entry, and returns false so the
+   * row delete is skipped. Every path through
+   * internalAdapter.deleteUser soft-deletes: self-service deleteUser,
+   * the email-token callback, and admin removeUser. The route still
+   * revokes sessions, clears the cookie, and answers success.
+   *
+   * The user schema must declare deletedAt (user.additionalFields, with
+   * input: false); without it the plugin throws at init.
+   *
+   * better-auth deletes the user's session and account rows BEFORE the
+   * user hook runs, so credentials and OAuth links are hard-deleted. The
+   * user row survives; sign-in must still be gated on deletedAt (see
+   * docs/better-auth.mdx).
    */
-  softDeleteTables?: "user"[];
+  softDeleteUser?: boolean;
   /**
    * Callback to write an audit entry.
    * If not provided, audit logging is disabled.
@@ -152,7 +139,7 @@ type UserWithId = { id: string } & Record<string, unknown>;
  *
  * Features:
  * - Audit logging for user and account create/update operations via databaseHooks
- * - Optional delete audit logging when softDeleteTables includes 'user'
+ * - Optional user soft delete (softDeleteUser) via databaseHooks.user.delete.before
  *
  * ATTRIBUTION REQUIRES CONTEXT: entries attribute to the authenticated
  * principal from AsyncLocalStorage. Wrap request handling in
@@ -171,16 +158,12 @@ type UserWithId = { id: string } & Record<string, unknown>;
  * });
  * ```
  *
- * NOTE: This plugin only provides audit logging. For actual soft-delete behavior
- * (updating deletedAt instead of hard deleting), use createSoftDeleteCallback
- * with the user.deleteUser.beforeDelete option.
- *
  * @param config - Plugin configuration
  * @returns BetterAuthPlugin instance
  *
  * @example
  * ```typescript
- * import { ledgerPlugin } from '@rafters/ledger/better-auth-plugin';
+ * import { ledgerPlugin } from '@rafters/ledger/better-auth';
  *
  * export const auth = betterAuth({
  *   plugins: [
@@ -199,7 +182,7 @@ type UserWithId = { id: string } & Record<string, unknown>;
  */
 export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   const auditTables = config?.auditTables ?? ["user"];
-  const softDeleteTables = config?.softDeleteTables ?? [];
+  const softDeleteUser = config?.softDeleteUser === true;
   const writeAuditEntry = config?.writeAuditEntry;
   const redactPatterns = config?.redactPatterns;
 
@@ -306,44 +289,59 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     };
   }
 
-  // Add user delete audit logging if configured
-  // Note: better-auth's deleteUser hooks are NOT part of databaseHooks.
-  // They must be configured separately in user.deleteUser config.
-  // This plugin ONLY logs a SOFT_DELETE audit entry; it does NOT perform the
-  // actual soft-delete. To implement soft-delete behavior (e.g. updating
-  // a deletedAt column), configure your own user.deleteUser.beforeDelete
-  // callback, for example using createSoftDeleteCallback.
-  const userDeleteHooks = softDeleteTables.includes("user")
-    ? {
-        beforeDelete: async (user: User) => {
-          // Log the soft-delete intent. Self-service deletion is the
-          // common flow, so the target is the fallback actor; an
-          // authenticated context (admin deleting a user) wins.
-          await audit({
-            tableName: "user",
-            recordId: user.id,
-            action: "SOFT_DELETE",
-            oldData: user as unknown as Record<string, unknown>,
-            newData: null,
-            userId: resolveActor(user.id),
-          });
+  /**
+   * The user delete.before hook for softDeleteUser. Writes through the
+   * adapter directly, not internalAdapter.updateUser, so no update hooks
+   * fire (no stray UPDATE entry) and no session refresh runs on a user
+   * whose sessions are being revoked. Returning false skips the row
+   * delete; the route goes on to revoke sessions and answer success.
+   */
+  function softDeleteUserHook(ctx: AuthContext) {
+    const fields = ctx.tables.user?.fields ?? {};
+    if (!("deletedAt" in fields)) {
+      throw new Error(
+        "[ledger] softDeleteUser requires a deletedAt field on the better-auth user schema: declare it in user.additionalFields with input: false",
+      );
+    }
+    const hasDeletedBy = "deletedBy" in fields;
+
+    return async (user: User & Record<string, unknown>): Promise<false> => {
+      const values = softDeleteValues(null);
+      await ctx.adapter.update({
+        model: "user",
+        where: [{ field: "id", value: user.id }],
+        update: {
+          deletedAt: values.deletedAt,
+          ...(hasDeletedBy ? { deletedBy: values.deletedBy } : {}),
         },
-      }
-    : undefined;
+      });
+      await audit({
+        tableName: "user",
+        recordId: user.id,
+        action: "SOFT_DELETE",
+        oldData: user,
+        newData: { ...user, ...values },
+        // Self-service deletion is the common flow, so the target is the
+        // fallback actor; an authenticated context (admin) wins.
+        userId: resolveActor(user.id),
+      });
+      return false;
+    };
+  }
 
   return {
     id: "ledger",
-    init: () => {
+    init: (ctx) => {
+      if (!softDeleteUser) return { options: { databaseHooks } };
+      // A fresh object per init: better-auth keeps the hooks by reference, so
+      // mutating the shared one would point an earlier instance's hook at a
+      // later instance's adapter when one plugin value serves several.
       return {
         options: {
-          databaseHooks,
-          ...(userDeleteHooks
-            ? {
-                user: {
-                  deleteUser: userDeleteHooks,
-                },
-              }
-            : {}),
+          databaseHooks: {
+            ...databaseHooks,
+            user: { ...databaseHooks["user"], delete: { before: softDeleteUserHook(ctx) } },
+          },
         },
       };
     },
@@ -351,221 +349,18 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
 }
 
 /**
- * Options for the soft-delete callback.
- */
-export interface SoftDeleteCallbackOptions {
-  /**
-   * Drizzle database instance with update capability.
-   */
-  // biome-ignore lint/suspicious/noExplicitAny: Required for Drizzle type compatibility
-  db: { update: (table: any) => any };
-  /**
-   * The user table with deletedAt column.
-   * Must have 'id' and 'deletedAt' columns.
-   */
-  // biome-ignore lint/suspicious/noExplicitAny: Required for Drizzle table type compatibility
-  userTable: { id: any; deletedAt: any; deletedBy?: any };
-  /**
-   * Function to build a WHERE clause for the user ID.
-   * Example: (userId) => eq(userTable.id, userId)
-   */
-  // biome-ignore lint/suspicious/noExplicitAny: Required for Drizzle SQL type compatibility
-  whereUserId: (userId: string) => any;
-  /**
-   * Revoke ALL sessions for the user. REQUIRED.
-   *
-   * Soft-delete via beforeDelete aborts better-auth's own deleteUser
-   * cleanup, so nothing else revokes sessions: without this, a
-   * "deleted" user keeps every live session (cookie cache, KV-backed
-   * secondaryStorage, session rows) until natural expiry. Wire it to
-   * better-auth's INTERNAL adapter --
-   * (await auth.$context).internalAdapter.deleteUserSessions(userId)
-   * on current 1.6.x -- which also clears secondaryStorage (including
-   * the active-sessions index). Version hazard: before better-auth
-   * split the API mid-1.6, the call was deleteSessions(userId); on
-   * post-split versions deleteSessions takes session-token ARRAYS and
-   * a userId argument silently deletes nothing -- feature-detect
-   * deleteUserSessions (see the example below). Do not use
-   * auth.api.revokeUserSessions: it exists only with the admin()
-   * plugin and is gated on an authenticated admin session, which the
-   * self-service deleteUser flow does not have. Making deletion
-   * incomplete should require deliberately writing a no-op, not
-   * forgetting a field.
-   */
-  revokeSessions: (userId: string) => Promise<void>;
-  /**
-   * Callback to write audit entry (optional).
-   */
-  writeAuditEntry?: (entry: LedgerAuditEntry) => Promise<void>;
-  /**
-   * Additional key patterns to redact beyond DEFAULT_SECRET_PATTERNS.
-   * Redaction itself cannot be disabled.
-   */
-  redactPatterns?: readonly string[];
-}
-
-/**
- * Creates a beforeDelete callback that performs soft-delete instead of hard delete.
- *
- * This callback, IN ORDER:
- * 1. Revokes all of the user's sessions (revokeSessions -- required).
- *    Revocation failure aborts the whole operation with the real error:
- *    the caller must see the deletion as failed, never as succeeded
- *    with live sessions left behind.
- * 2. Performs the soft-delete UPDATE on the user record
- * 3. Logs a redacted audit entry (if writeAuditEntry is provided)
- * 4. Throws SoftDeletePerformedError to prevent the actual hard delete
- *
- * IMPORTANT: The throw prevents the hard delete from happening.
- * Your client code should catch this and treat it as success.
- *
- * SOFT-DELETE IS NOT DELETION UNTIL SIGN-IN IS GATED. Aborting
- * better-auth's deleteUser also aborts its account/OAuth cleanup, and
- * better-auth session resolution knows nothing about deletedAt -- so
- * beyond session revocation you MUST gate authentication on deletedAt,
- * or an OAuth sign-in on the soft-deleted row silently resurrects the
- * account. Recipe: a user databaseHook (or session create hook) that
- * rejects when the resolved user has deletedAt set:
- *
- * ```typescript
- * import { APIError } from "better-auth/api";
- *
- * databaseHooks: {
- *   session: {
- *     create: {
- *       before: async (session) => {
- *         const [u] = await db.select().from(users)
- *           .where(eq(users.id, session.userId));
- *         if (u?.deletedAt) {
- *           throw new APIError("FORBIDDEN", { message: "Account deleted" });
- *         }
- *       },
- *     },
- *   },
- * },
- * ```
- *
- * @param options - Configuration options
- * @returns A beforeDelete callback function
- *
- * @example
- * ```typescript
- * import { createSoftDeleteCallback } from '@rafters/ledger/better-auth-plugin';
- * import { eq } from 'drizzle-orm';
- *
- * export const auth = betterAuth({
- *   user: {
- *     deleteUser: {
- *       enabled: true,
- *       beforeDelete: createSoftDeleteCallback({
- *         db,
- *         userTable: users,
- *         whereUserId: (userId) => eq(users.id, userId),
- *         revokeSessions: async (userId) => {
- *           // The internal adapter works in the self-service deleteUser
- *           // flow and clears secondaryStorage itself. Do NOT use
- *           // auth.api.revokeUserSessions -- that endpoint exists only
- *           // with the admin() plugin and requires an authenticated
- *           // ADMIN session, which the user deleting their own account
- *           // does not have.
- *           // VERSION NOTE: better-auth split the internal API mid-1.6.
- *           // Late 1.6.x has deleteUserSessions(userId); before the
- *           // split, deleteSessions accepted a userId directly -- and on
- *           // post-split versions deleteSessions(userId) SILENTLY
- *           // DELETES NOTHING (it now takes session-token arrays). The
- *           // local type widening keeps both branches compiling on
- *           // either version's shipped types.
- *           const ctx = await auth.$context;
- *           const ia = ctx.internalAdapter as {
- *             deleteUserSessions?: (userId: string) => Promise<void>;
- *             deleteSessions: (value: string | string[]) => Promise<void>;
- *           };
- *           if (ia.deleteUserSessions) {
- *             await ia.deleteUserSessions(userId);
- *           } else {
- *             await ia.deleteSessions(userId);
- *           }
- *         },
- *         writeAuditEntry: async (entry) => {
- *           await db.insert(auditLog).values({ ...entry, id: uuidv7() });
- *         },
- *       }),
- *     },
- *   },
- * });
- * ```
- */
-export function createSoftDeleteCallback(
-  options: SoftDeleteCallbackOptions,
-): (user: User, request?: Request) => Promise<void> {
-  const { db, userTable, whereUserId, revokeSessions, writeAuditEntry } = options;
-
-  return async (user: User, _request?: Request): Promise<void> => {
-    // Revoke sessions FIRST. If this throws, the real error propagates:
-    // no soft-delete happens, no success is signaled, and the caller
-    // sees the deletion as failed. A crash between revocation and the
-    // UPDATE leaves sessions dead and the user intact -- a safe state
-    // the user can retry from. The reverse order would leave a
-    // "deleted" user with live sessions.
-    await revokeSessions(user.id);
-
-    // Perform soft-delete
-    const deleteVals = softDeleteValues(null);
-
-    // biome-ignore lint/suspicious/noExplicitAny: Required for Drizzle ORM dynamic table operations
-    await (db.update(userTable) as any)
-      .set({
-        deletedAt: deleteVals.deletedAt,
-        ...(userTable.deletedBy !== undefined ? { deletedBy: deleteVals.deletedBy } : {}),
-      })
-      .where(whereUserId(user.id));
-
-    // Log to audit (redacted, fail-closed on redaction failure)
-    if (writeAuditEntry) {
-      let redacted: LedgerAuditEntry | null = null;
-      try {
-        redacted = redactAuditEntry(
-          {
-            tableName: "user",
-            recordId: user.id,
-            action: "SOFT_DELETE",
-            oldData: user as unknown as Record<string, unknown>,
-            newData: { ...user, ...deleteVals } as unknown as Record<string, unknown>,
-            userId: user.id,
-          },
-          options.redactPatterns,
-        );
-      } catch (error) {
-        safeLog("Redaction failed; soft-delete audit entry NOT written", error);
-      }
-      if (redacted) {
-        try {
-          await writeAuditEntry(redacted);
-        } catch (error) {
-          safeLog("Failed to write audit entry for soft-delete", error);
-        }
-      }
-    }
-
-    // Throw to prevent the hard delete from happening
-    // This is the recommended pattern for better-auth's beforeDelete
-    // Use isSoftDeletePerformed() to check for this error type
-    throw new SoftDeletePerformedError(user.id);
-  };
-}
-
-/**
  * Creates a simple audit-only callback for afterDelete.
  *
- * Unlike createSoftDeleteCallback, this just logs the delete without
- * preventing it (useful for hard delete with audit trail).
+ * Logs the delete without preventing it (hard delete with audit trail).
+ * Do not combine with softDeleteUser: afterDelete still runs after a
+ * soft delete and would record a DELETE that did not happen.
  *
  * @param writeAuditEntry - Callback to write audit entry
  * @returns A callback function for afterDelete
  *
  * @example
  * ```typescript
- * import { createDeleteAuditCallback } from '@rafters/ledger/better-auth-plugin';
+ * import { createDeleteAuditCallback } from '@rafters/ledger/better-auth';
  *
  * export const auth = betterAuth({
  *   user: {
@@ -609,6 +404,3 @@ export function createDeleteAuditCallback(
     }
   };
 }
-
-// Re-export error types from core for backwards compatibility
-export { SoftDeletePerformedError, isSoftDeletePerformed } from "./core/errors.js";

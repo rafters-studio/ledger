@@ -48,11 +48,7 @@ export * from "./drizzle/index.js";
 // Better Auth Plugin
 export {
   createDeleteAuditCallback,
-  createSoftDeleteCallback,
-  isSoftDeletePerformed,
   type LedgerAuditEntry,
   type LedgerPluginConfig,
   ledgerPlugin,
-  type SoftDeleteCallbackOptions,
-  SoftDeletePerformedError,
 } from "./better-auth.js";

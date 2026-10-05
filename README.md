@@ -23,12 +23,12 @@ Full documentation: [docs/](./docs/)
 | [Kysely](./docs/kysely.mdx) | Soft-delete and audit plugin for SQLite and D1 |
 | [Context](./docs/context.mdx) | AsyncLocalStorage propagation, middleware setup |
 | [GDPR](./docs/gdpr.mdx) | `purgeUserData`, PII anonymization, admin preservation |
-| [Better Auth](./docs/better-auth.mdx) | `ledgerPlugin`, `createSoftDeleteCallback`, flow control |
+| [Better Auth](./docs/better-auth.mdx) | `ledgerPlugin`, user soft delete on better-auth 1.7+ |
 | [API Reference](./docs/api-reference.mdx) | Every export, every type, organized by subpath |
 
-## Soft-delete is not deletion until sessions die
+## better-auth soft delete keeps the row, not the credentials
 
-`createSoftDeleteCallback` intercepts better-auth's `deleteUser` by throwing, which also aborts better-auth's own cleanup: nothing else revokes sessions, account/OAuth rows survive, and better-auth session resolution knows nothing about `deletedAt`. The callback therefore REQUIRES a `revokeSessions` implementation and runs it before anything else -- and you must additionally gate authentication on `deletedAt`, or an OAuth sign-in on the soft-deleted row silently resurrects the account. The full contract and a sign-in gate recipe live in the [Better Auth guide](./docs/better-auth.mdx) and on the `createSoftDeleteCallback` docblock.
+`ledgerPlugin({ softDeleteUser: true })` soft-deletes better-auth users through `databaseHooks.user.delete.before` (better-auth 1.7+): it sets `deletedAt`, writes a `SOFT_DELETE` entry, and vetoes the row delete, while better-auth still revokes sessions and answers success. better-auth deletes the user's account rows (password hashes, OAuth links) before that hook runs, and its session resolution knows nothing about `deletedAt`, so you must gate sign-in on `deletedAt` or an OAuth sign-in with account linking brings the user back. The recipe lives in the [Better Auth guide](./docs/better-auth.mdx).
 
 ## License
 

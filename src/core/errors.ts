@@ -5,61 +5,6 @@
  */
 
 /**
- * Error thrown when soft-delete is performed successfully.
- * Check for this error type to handle soft-delete success cases.
- */
-export class SoftDeletePerformedError extends Error {
-  readonly code = "SOFT_DELETE_PERFORMED" as const;
-  readonly softDeleted = true as const;
-  readonly userId: string;
-
-  constructor(userId: string) {
-    super("User soft-deleted successfully");
-    this.name = "SoftDeletePerformedError";
-    this.userId = userId;
-  }
-}
-
-/**
- * Check if an error is a soft-delete success error.
- *
- * TRUST BOUNDARY: this duck-types on `code` and `softDeleted` so the
- * check survives cross-realm and multi-copy module setups where
- * instanceof fails. That makes it spoofable BY DESIGN -- but only by
- * code already running inside your process. Never apply it to errors
- * that originate from client-supplied data; treating an
- * attacker-shaped object as "delete succeeded" is on the caller.
- *
- * @param error - The error to check
- * @returns true if this is a soft-delete success
- *
- * @example
- * ```typescript
- * try {
- *   await auth.api.deleteUser({ userId });
- * } catch (error) {
- *   if (isSoftDeletePerformed(error)) {
- *     // Success! User was soft-deleted
- *     return { success: true };
- *   }
- *   throw error;
- * }
- * ```
- */
-export function isSoftDeletePerformed(error: unknown): error is SoftDeletePerformedError {
-  if (error instanceof SoftDeletePerformedError) return true;
-  if (error instanceof Error) {
-    return (
-      "code" in error &&
-      (error as Error & { code?: string }).code === "SOFT_DELETE_PERFORMED" &&
-      "softDeleted" in error &&
-      (error as Error & { softDeleted?: boolean }).softDeleted === true
-    );
-  }
-  return false;
-}
-
-/**
  * Error thrown by createAuditedDb when a table listed
  * in softDeleteTables is deleted from but has no deletedAt property.
  * Loud failure instead of a silent fallback to hard delete.

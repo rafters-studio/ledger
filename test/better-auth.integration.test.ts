@@ -1,8 +1,8 @@
 /**
  * better-auth integration suite.
  *
- * Boots a real betterAuth() instance with ledgerPlugin, createSoftDeleteCallback,
- * and the sign-in gate recipe from docs/better-auth.mdx, over drizzleAdapter on an
+ * Boots a real betterAuth() instance with ledgerPlugin (softDeleteUser on) and
+ * the sign-in gate recipe from docs/better-auth.mdx, over drizzleAdapter on an
  * in-memory node:sqlite database. Every flow goes through auth.handler as an HTTP
  * Request, wrapped in the ledger-context middleware the docs require, so a changed
  * hook signature, merge rule, or route behavior in better-auth fails here.
@@ -15,6 +15,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
+import { getAuthTables } from "better-auth/db";
 import { getMigrations } from "better-auth/db/migration";
 import { admin, testUtils } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
@@ -22,7 +23,7 @@ import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { uuidv7 } from "uuidv7";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { createSoftDeleteCallback, ledgerPlugin } from "../src/better-auth.js";
+import { ledgerPlugin } from "../src/better-auth.js";
 import type { LedgerAuditEntry } from "../src/better-auth.js";
 import { createLedgerContext, runWithLedgerContext } from "../src/core/context.js";
 import { isUserDataPurged, purgeUserData } from "../src/drizzle/gdpr.js";
@@ -59,8 +60,19 @@ const session = sqliteTable("session", {
   impersonatedBy: text("impersonatedBy"),
 });
 
+// better-auth 1.7.0 through 1.7.2 add a required account.issuer column
+// (unique with accountId); 1.7.3 removed it. The suite runs on both ends of
+// the peer range, so the schema follows the installed version's own tables.
+const accountHasIssuer = "issuer" in getAuthTables({}).account.fields;
+
+/** The issuer field for a test-created account, on versions that have one. */
+function issuerFor(issuer: string): { issuer?: string } {
+  return accountHasIssuer ? { issuer } : {};
+}
+
 const account = sqliteTable("account", {
   id: text("id").primaryKey(),
+  ...(accountHasIssuer ? { issuer: text("issuer").notNull() } : {}),
   accountId: text("accountId").notNull(),
   providerId: text("providerId").notNull(),
   userId: text("userId").notNull(),
@@ -175,28 +187,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
         deletedAt: { type: "date", required: false, input: false },
         deletedBy: { type: "string", required: false, input: false },
       },
-      deleteUser: {
-        enabled: true,
-        beforeDelete: createSoftDeleteCallback({
-          db,
-          userTable: user,
-          whereUserId: (userId) => eq(user.id, userId),
-          // The docs recipe, verbatim: feature-detect the mid-1.6 split.
-          revokeSessions: async (userId) => {
-            const ctx = await auth.$context;
-            const ia = ctx.internalAdapter as {
-              deleteUserSessions?: (userId: string) => Promise<void>;
-              deleteSessions: (value: string | string[]) => Promise<void>;
-            };
-            if (ia.deleteUserSessions) {
-              await ia.deleteUserSessions(userId);
-            } else {
-              await ia.deleteSessions(userId);
-            }
-          },
-          writeAuditEntry,
-        }),
-      },
+      deleteUser: { enabled: true },
     },
     // The sign-in gate recipe from the docs.
     databaseHooks: {
@@ -212,7 +203,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
       },
     },
     plugins: [
-      ledgerPlugin({ auditTables: ["user", "account"], writeAuditEntry }),
+      ledgerPlugin({ auditTables: ["user", "account"], softDeleteUser: true, writeAuditEntry }),
       admin(),
       testUtils(),
     ],
@@ -329,10 +320,12 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
         userId: memberId,
         providerId: "github",
         accountId: "github-member",
+        ...issuerFor("local:oauth:github"),
       });
       linkedAccountId = linked.id;
 
-      const response = await post("/unlink-account", { providerId: "github" }, memberHeaders);
+      // 1.7 unlinks by better-auth account id, not by provider id.
+      const response = await post("/unlink-account", { accountId: linkedAccountId }, memberHeaders);
       expect(response.status).toBe(200);
       const rows = await db.select().from(account).where(eq(account.id, linkedAccountId));
       expect(rows).toHaveLength(0);
@@ -349,7 +342,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
   });
 
   describe("self-service delete over auth.handler", () => {
-    test("soft-deletes the user, revokes every session, and audits SOFT_DELETE", async () => {
+    test("soft-deletes the user, revokes every session, and audits SOFT_DELETE once", async () => {
       const before = await db.select().from(session).where(eq(session.userId, memberId));
       expect(before.length).toBeGreaterThan(0);
 
@@ -365,16 +358,37 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
         (e) => e.recordId === memberId && e.action === "SOFT_DELETE",
       );
       expect(softDeletes).toHaveLength(1);
+      expect(softDeletes[0]?.userId).toBe(memberId);
     });
 
-    // Fails until #44: createSoftDeleteCallback throws SoftDeletePerformedError
-    // to stop the hard delete, and better-auth answers the throw with a 500.
-    test.fails("answers the browser with 200 (#44)", () => {
+    test("answers the browser with 200 and clears the session cookie (#44)", async () => {
       expect(deleteResponse?.status).toBe(200);
+      expect(await deleteResponse?.json()).toMatchObject({ success: true });
+      const cleared = deleteResponse?.headers
+        .getSetCookie()
+        .find((c) => c.startsWith("better-auth.session_token="));
+      expect(cleared).toMatch(/Max-Age=0/);
+    });
+
+    test("better-auth hard-deletes the account rows before the user hook runs", async () => {
+      const rows = await db.select().from(account).where(eq(account.userId, memberId));
+      expect(rows).toHaveLength(0);
     });
   });
 
   test("sign-in on the soft-deleted user is rejected by the gate", async () => {
+    // The row survives with its email, so a later sign-in can reach it again
+    // (an OAuth sign-in with account linking attaches a new account to it).
+    // Restore a credential account to drive that path through the gate.
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.createAccount({
+      userId: memberId,
+      providerId: "credential",
+      accountId: memberId,
+      password: await ctx.password.hash(member.password),
+      ...issuerFor("local:credential"),
+    });
+
     const response = await post("/sign-in/email", {
       email: member.email,
       password: member.password,
