@@ -415,6 +415,34 @@ describe("ledgerPlugin", () => {
     expect(entries[0]?.newData?.accessToken).toBe("[REDACTED]");
   });
 
+  test("redacts the verification value column when verification is audited", async () => {
+    const entries: LedgerAuditEntry[] = [];
+    const plugin = ledgerPlugin({
+      auditTables: ["verification"],
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+
+    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const verificationHooks = result?.options?.databaseHooks?.verification;
+
+    await verificationHooks?.create?.after?.({
+      id: "ver-1",
+      identifier: "reset-password:user-1",
+      value: "otp-482913",
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(JSON.stringify(entries[0])).not.toContain("otp-482913");
+    expect(entries[0]?.newData).toMatchObject({
+      id: "ver-1",
+      identifier: "reset-password:user-1",
+      value: "[REDACTED]",
+    });
+  });
+
   test("redaction handles nested payloads and case variants", async () => {
     const entries: LedgerAuditEntry[] = [];
     const plugin = ledgerPlugin({

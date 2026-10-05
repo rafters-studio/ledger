@@ -677,11 +677,15 @@ Thrown by `createSoftDeleteCallback` to interrupt the hard delete after a succes
 
 ### `redactSensitiveFields(data, extraPatterns?)`
 
-Replaces values under secret-bearing keys with `"[REDACTED]"`, recursing objects and arrays (`Date` passes through). Keys match `DEFAULT_SECRET_PATTERNS` (`token`, `secret`, `password`, `apikey`, `api_key`) plus `extraPatterns`, case-insensitively as substrings. Applied automatically -- and non-optionally, fail-closed -- to every better-auth plugin audit path. Exported for standalone use.
+Replaces values under secret-bearing keys with `"[REDACTED]"`, recursing objects and arrays (`Date` passes through). Keys match `DEFAULT_SECRET_PATTERNS` (`token`, `secret`, `password`, `apikey`, `api_key`, `otp`, `code`, `hash`, `salt`, `jwt`, `credential`, `privatekey`, `private_key`, `authorization`, `cookie`) plus `extraPatterns`, case-insensitively as substrings. String values are not inspected. Exported for standalone use.
 
-### `DEFAULT_SECRET_PATTERNS` / `REDACTED_VALUE`
+### `redactTableRow(tableName, data, extraPatterns?)`
 
-The default pattern list and the replacement sentinel used by `redactSensitiveFields`.
+`redactSensitiveFields`, then the table's `TABLE_SECRET_COLUMNS` (top-level keys, exact name) replaced with `"[REDACTED]"`. Applied automatically -- and non-optionally, fail-closed -- to every better-auth plugin audit path. Exported for standalone use.
+
+### `DEFAULT_SECRET_PATTERNS` / `TABLE_SECRET_COLUMNS` / `REDACTED_VALUE`
+
+The default key-pattern list, the per-table secret columns (`{ verification: ["value"] }`), and the replacement sentinel.
 
 ### `assertLedgerContextAvailable()`
 
