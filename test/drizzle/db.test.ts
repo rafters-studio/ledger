@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { describe, expect, test, vi } from "vitest";
@@ -464,8 +464,8 @@ function createSqliteDb() {
     );
     CREATE TABLE notes (body TEXT, deleted_at INTEGER, deleted_by TEXT);
   `);
-  const query = (sql: string, params: unknown[], method: ProxyMethod) => {
-    const statement = raw.prepare(sql);
+  const query = (sqlText: string, params: unknown[], method: ProxyMethod) => {
+    const statement = raw.prepare(sqlText);
     const args = params as SQLInputValue[];
     if (method === "run") {
       statement.run(...args);
@@ -476,7 +476,7 @@ function createSqliteDb() {
     return { rows: method === "get" ? rows[0] : rows };
   };
   const db = drizzle(
-    async (sql, params, method) => query(sql, params, method),
+    async (sqlText, params, method) => query(sqlText, params, method),
     async (queries) => queries.map((q) => query(q.sql, q.params, q.method)),
   );
   return { raw, db };
@@ -628,6 +628,32 @@ describe("createAuditedDb soft-delete audit entries (real SQLite)", () => {
     expect(deletedIds()).toEqual(["u1", "u3"]);
     expect(entries.map((e) => e.recordId)).toEqual(["u1", "u3"]);
     expect(results).toEqual([[{ id: "u1" }], [], [{ name: "Cy" }]]);
+  });
+
+  test("a prepared statement executed twice writes entries for both executions", async () => {
+    const { audited, entries, deletedIds } = auditedSqlite();
+
+    const prepared = audited
+      .delete(users)
+      .where(eq(users.id, sql.placeholder("id")))
+      .prepare();
+    await prepared.execute({ id: "u1" });
+    await prepared.execute({ id: "u2" });
+    await settled();
+
+    expect(deletedIds()).toEqual(["u1", "u2"]);
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u2"]);
+  });
+
+  test("a builder awaited twice writes entries for each execution", async () => {
+    const { audited, entries } = auditedSqlite();
+
+    const statement = audited.delete(users).where(eq(users.id, "u1"));
+    await statement;
+    await statement;
+    await settled();
+
+    expect(entries.map((e) => e.recordId)).toEqual(["u1", "u1"]);
   });
 
   test("a composite primary key serializes as a JSON array record id", async () => {

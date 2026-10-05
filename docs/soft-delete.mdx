@@ -205,7 +205,7 @@ await db.delete(users).where(eq(users.id, userId));
 
 ### Soft-delete audit entries
 
-With `writeAuditEntry` in the config, every executed soft delete writes one `SOFT_DELETE` entry per affected row, with that row's primary key as `recordId`, so `purgeUserData` finds the entries by `recordId` and `ownedRecords`. A composite key is written as a JSON array of strings. A delete that matches no rows writes nothing. A listed table with no primary key throws `MissingPrimaryKeyError` at `db.delete()`.
+With `writeAuditEntry` in the config, every executed soft delete writes one `SOFT_DELETE` entry per affected row, with that row's primary key as `recordId`, so `purgeUserData` finds the entries by `recordId` and `ownedRecords`. A composite key is written as a JSON array of strings. A delete that matches no rows writes nothing. A statement executed more than once, such as a prepared statement run again, writes entries for each execution. A listed table with no primary key throws `MissingPrimaryKeyError` at `db.delete()`.
 
 On SQLite and PostgreSQL the UPDATE runs with `RETURNING` the primary key. That changes what a soft delete without its own `.returning()` resolves to: the affected keys (`[{ id: "u1" }]`) instead of the driver's run result (`changes`, `rowsAffected`, D1 `meta`). A caller's own `.returning()` gets its rows back unchanged. `.run()` and `.values()` discard the returned keys and write one statement-level entry with `recordId` `"unknown"`. In `db.batch`, each soft-delete member records its own rows.
 
