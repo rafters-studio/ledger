@@ -291,13 +291,93 @@ describe("ledgerPlugin", () => {
     expect(result?.options?.databaseHooks?.account).toBeUndefined();
   });
 
-  test("registers no delete hook and no deleteUser option without softDeleteUser", () => {
+  test("registers only delete.after and no deleteUser option without softDeleteUser", () => {
     const plugin = ledgerPlugin();
 
     const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
 
-    expect(result?.options?.databaseHooks?.user?.delete).toBeUndefined();
+    expect(result?.options?.databaseHooks?.user?.delete?.before).toBeUndefined();
+    expect(result?.options?.databaseHooks?.user?.delete?.after).toBeDefined();
     expect(result?.options?.user).toBeUndefined();
+  });
+
+  describe("delete.after", () => {
+    function hooksFor(auditTables: ("user" | "account" | "session" | "verification")[]) {
+      const entries: LedgerAuditEntry[] = [];
+      const plugin = ledgerPlugin({
+        auditTables,
+        writeAuditEntry: (entry) => {
+          entries.push(entry);
+          return Promise.resolve();
+        },
+      });
+      const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+      return { hooks: result?.options?.databaseHooks, entries };
+    }
+
+    test("a hard user delete writes one DELETE entry with the row as oldData", async () => {
+      const { hooks, entries } = hooksFor(["user"]);
+
+      await hooks?.user?.delete?.after?.({ id: "user-9", email: "gone@test.com" }, null);
+
+      expect(entries).toEqual([
+        {
+          tableName: "user",
+          recordId: "user-9",
+          action: "DELETE",
+          oldData: { id: "user-9", email: "gone@test.com" },
+          newData: null,
+          userId: "user-9",
+        },
+      ]);
+    });
+
+    test("an account delete is redacted and attributed to the context actor", async () => {
+      const { hooks, entries } = hooksFor(["account"]);
+
+      await runWithLedgerContext(createLedgerContext({ userId: "user-1" }), () =>
+        hooks?.account?.delete?.after?.(
+          {
+            id: "acc-1",
+            userId: "user-1",
+            providerId: "github",
+            accessToken: "gho_secret",
+            refreshToken: "ghr_secret",
+          },
+          null,
+        ),
+      );
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        tableName: "account",
+        recordId: "acc-1",
+        action: "DELETE",
+        newData: null,
+        userId: "user-1",
+      });
+      expect(entries[0]?.oldData).toMatchObject({ id: "acc-1", providerId: "github" });
+      expect(JSON.stringify(entries[0])).not.toContain("_secret");
+    });
+
+    test("a session delete (sign-out) is redacted and has no fallback actor", async () => {
+      const { hooks, entries } = hooksFor(["session"]);
+
+      await hooks?.session?.delete?.after?.(
+        { id: "sess-1", userId: "user-1", token: "session-token-value" },
+        null,
+      );
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ tableName: "session", action: "DELETE", userId: null });
+      expect(JSON.stringify(entries[0])).not.toContain("session-token-value");
+    });
+
+    test("session deletes stay unaudited unless session is listed", () => {
+      const { hooks } = hooksFor(["user"]);
+
+      expect(hooks?.session).toBeUndefined();
+    });
   });
 
   test("fail-closed: an entry that cannot be redacted is never written", async () => {
@@ -675,12 +755,14 @@ describe("ledgerPlugin softDeleteUser", () => {
     expect(entries).toHaveLength(0);
   });
 
-  test("keeps the user create and update audit hooks alongside the delete hook", () => {
+  test("keeps the user create, update, and delete.after audit hooks alongside the delete hook", () => {
     const { result } = initWith(["deletedAt"]);
     const userHooks = result?.options?.databaseHooks?.user;
 
     expect(userHooks?.create?.after).toBeDefined();
     expect(userHooks?.update?.after).toBeDefined();
+    // Never fires for a soft delete: the before hook's veto skips after hooks.
+    expect(userHooks?.delete?.after).toBeDefined();
   });
 
   test("one plugin value initialized twice keeps each hook on its own adapter", async () => {

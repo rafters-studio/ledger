@@ -12,7 +12,7 @@
  */
 
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { betterAuth } from "better-auth";
+import { type BetterAuthOptions, betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { getAuthTables } from "better-auth/db";
@@ -171,7 +171,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
     });
   }
 
-  const auth = betterAuth({
+  const authOptions = {
     baseURL: BASE_URL,
     secret: TEST_SECRET,
     database: drizzleAdapter(db, {
@@ -207,25 +207,39 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
       admin(),
       testUtils(),
     ],
+  } satisfies BetterAuthOptions;
+  const auth = betterAuth(authOptions);
+
+  // The same database and schema with softDeleteUser off: a user delete is
+  // a real row delete, audited by the plugin's delete.after hooks.
+  const hardDeleteAuth = betterAuth({
+    ...authOptions,
+    plugins: [ledgerPlugin({ auditTables: ["user", "account"], writeAuditEntry }), testUtils()],
   });
+  type AuthInstance = typeof auth | typeof hardDeleteAuth;
 
   /**
    * The ledger-context middleware from the docs, in front of auth.handler:
    * resolve the authenticated principal, then run the request inside it.
    */
-  async function handle(request: Request): Promise<Response> {
-    const current = await auth.api.getSession({ headers: request.headers });
+  async function handle(request: Request, instance: AuthInstance = auth): Promise<Response> {
+    const current = await instance.api.getSession({ headers: request.headers });
     const url = new URL(request.url);
     return runWithLedgerContext(
       createLedgerContext({
         userId: current?.user.id ?? null,
         endpoint: `${request.method} ${url.pathname}`,
       }),
-      () => auth.handler(request),
+      () => instance.handler(request),
     );
   }
 
-  function post(path: string, body: Record<string, unknown>, headers?: Headers): Promise<Response> {
+  function post(
+    path: string,
+    body: Record<string, unknown>,
+    headers?: Headers,
+    instance?: AuthInstance,
+  ): Promise<Response> {
     const requestHeaders = new Headers(headers);
     requestHeaders.set("content-type", "application/json");
     requestHeaders.set("origin", BASE_URL);
@@ -235,6 +249,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
         headers: requestHeaders,
         body: JSON.stringify(body),
       }),
+      instance,
     );
   }
 
@@ -320,6 +335,8 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
         userId: memberId,
         providerId: "github",
         accountId: "github-member",
+        accessToken: "gho_member_access_token",
+        refreshToken: "ghr_member_refresh_token",
         ...issuerFor("local:oauth:github"),
       });
       linkedAccountId = linked.id;
@@ -331,13 +348,19 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
       expect(rows).toHaveLength(0);
     });
 
-    // Fails until the delete hooks land (#45): the plugin registers no
-    // account delete hook, so an unlink leaves no audit trace.
-    test.fails("unlinking records a DELETE entry for the account (#45)", async () => {
+    test("unlinking records one redacted DELETE entry for the account (#45)", async () => {
       const deletes = (await auditRows()).filter(
         (e) => e.tableName === "account" && e.recordId === linkedAccountId && e.action === "DELETE",
       );
       expect(deletes).toHaveLength(1);
+      // The ledger context survives better-auth's after-transaction queue.
+      expect(deletes[0]?.userId).toBe(memberId);
+      expect(deletes[0]?.newData).toBeNull();
+      const oldData: unknown = JSON.parse(deletes[0]?.oldData ?? "null");
+      expect(oldData).toMatchObject({ id: linkedAccountId, providerId: "github" });
+      expect(oldData).toMatchObject({ accessToken: "[REDACTED]", refreshToken: "[REDACTED]" });
+      expect(deletes[0]?.oldData).not.toContain("gho_member_access_token");
+      expect(deletes[0]?.oldData).not.toContain("ghr_member_refresh_token");
     });
   });
 
@@ -376,6 +399,48 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
     });
   });
 
+  describe("hard delete with softDeleteUser off", () => {
+    const leaver = {
+      email: "leaver@example.com",
+      password: "leaver-password-123",
+      name: "Leaver",
+    };
+    let leaverId = "";
+
+    test("deletes the user row and records one redacted DELETE entry (#45)", async () => {
+      const signUp = await post("/sign-up/email", leaver, undefined, hardDeleteAuth);
+      expect(signUp.status).toBe(200);
+      leaverId = ((await signUp.json()) as { user: { id: string } }).user.id;
+
+      const response = await post("/delete-user", {}, cookieHeaders(signUp), hardDeleteAuth);
+      expect(response.status).toBe(200);
+      expect(await db.select().from(user).where(eq(user.id, leaverId))).toHaveLength(0);
+
+      const userDeletes = (await auditRows()).filter(
+        (e) => e.tableName === "user" && e.recordId === leaverId && e.action === "DELETE",
+      );
+      expect(userDeletes).toHaveLength(1);
+      expect(userDeletes[0]?.userId).toBe(leaverId);
+      expect(JSON.parse(userDeletes[0]?.oldData ?? "null")).toMatchObject({
+        id: leaverId,
+        email: leaver.email,
+      });
+      expect(
+        (await auditRows()).filter((e) => e.recordId === leaverId && e.action === "SOFT_DELETE"),
+      ).toHaveLength(0);
+    });
+
+    test("the credential account deleted ahead of the user is audited without its hash", async () => {
+      const accountDeletes = (await auditRows()).filter(
+        (e) => e.tableName === "account" && e.action === "DELETE" && e.userId === leaverId,
+      );
+      expect(accountDeletes).toHaveLength(1);
+      const oldData: unknown = JSON.parse(accountDeletes[0]?.oldData ?? "null");
+      expect(oldData).toMatchObject({ providerId: "credential", userId: leaverId });
+      expect(oldData).toMatchObject({ password: "[REDACTED]" });
+    });
+  });
+
   test("sign-in on the soft-deleted user is rejected by the gate", async () => {
     // The row survives with its email, so a later sign-in can reach it again
     // (an OAuth sign-in with account linking attaches a new account to it).
@@ -399,22 +464,32 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
   });
 
   test("purgeUserData anonymizes every row the flows produced", async () => {
+    // The purge matches entries about the member's record and entries the
+    // member performed (the account DELETEs from unlink and self-delete).
+    const matchedIds = new Set(
+      (await auditRows())
+        .filter((e) => e.recordId === memberId || e.userId === memberId)
+        .map((e) => e.id),
+    );
     const result = await purgeUserData(db, auditLog, memberId);
     expect(result.entriesSkipped).toBe(0);
-    expect(result.entriesAnonymized).toBeGreaterThanOrEqual(3);
+    expect(result.entriesAnonymized).toBe(matchedIds.size);
 
     const rows = await auditRows();
-    const aboutMember = rows.filter((e) => e.recordId === memberId);
-    expect(aboutMember.length).toBe(result.entriesAnonymized);
-    for (const entry of aboutMember) {
+    const purged = rows.filter((e) => matchedIds.has(e.id));
+    expect(purged.filter((e) => e.recordId === memberId).length).toBeGreaterThanOrEqual(3);
+    expect(purged.filter((e) => e.tableName === "account" && e.action === "DELETE")).toHaveLength(
+      2,
+    );
+    for (const entry of purged) {
       expect(entry.oldData ?? "").not.toContain(member.email);
       expect(entry.newData ?? "").not.toContain(member.email);
     }
     // Self-performed entries lose the identifier; the admin's keeps the admin.
-    for (const entry of aboutMember.filter((e) => e.action !== "UPDATE")) {
+    for (const entry of purged.filter((e) => e.action !== "UPDATE")) {
       expect(entry.userId).toBe("PURGED_USER");
     }
-    expect(aboutMember.find((e) => e.action === "UPDATE")?.userId).toBe(adminId);
+    expect(purged.find((e) => e.action === "UPDATE")?.userId).toBe(adminId);
 
     expect(rows.filter((e) => e.action === "PURGE")).toHaveLength(1);
     expect(await isUserDataPurged(db, auditLog, memberId)).toBe(true);
