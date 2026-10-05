@@ -332,13 +332,18 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   return {
     id: "ledger",
     init: (ctx) => {
-      if (softDeleteUser) {
-        databaseHooks["user"] = {
-          ...databaseHooks["user"],
-          delete: { before: softDeleteUserHook(ctx) },
-        };
-      }
-      return { options: { databaseHooks } };
+      if (!softDeleteUser) return { options: { databaseHooks } };
+      // A fresh object per init: better-auth keeps the hooks by reference, so
+      // mutating the shared one would point an earlier instance's hook at a
+      // later instance's adapter when one plugin value serves several.
+      return {
+        options: {
+          databaseHooks: {
+            ...databaseHooks,
+            user: { ...databaseHooks["user"], delete: { before: softDeleteUserHook(ctx) } },
+          },
+        },
+      };
     },
   };
 }

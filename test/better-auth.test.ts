@@ -683,6 +683,20 @@ describe("ledgerPlugin softDeleteUser", () => {
     expect(userHooks?.update?.after).toBeDefined();
   });
 
+  test("one plugin value initialized twice keeps each hook on its own adapter", async () => {
+    const plugin = ledgerPlugin({ softDeleteUser: true });
+    const first = fakeContext(["deletedAt"]);
+    const second = fakeContext(["deletedAt"]);
+    // better-auth keeps the hooks object and looks the hook up at delete time.
+    const firstHooks = plugin.init?.(first.ctx)?.options?.databaseHooks;
+    plugin.init?.(second.ctx);
+
+    await firstHooks?.user?.delete?.before?.(user, null);
+
+    expect(first.update).toHaveBeenCalledTimes(1);
+    expect(second.update).not.toHaveBeenCalled();
+  });
+
   test("init throws when the user schema has no deletedAt field", () => {
     const plugin = ledgerPlugin({ softDeleteUser: true });
 
