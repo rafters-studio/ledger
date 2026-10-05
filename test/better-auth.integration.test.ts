@@ -4,8 +4,9 @@
  * Boots a real betterAuth() instance with ledgerPlugin (softDeleteUser on) and
  * the sign-in gate recipe from docs/better-auth.mdx, over drizzleAdapter on an
  * in-memory node:sqlite database. Every flow goes through auth.handler as an HTTP
- * Request, wrapped in the ledger-context middleware the docs require, so a changed
- * hook signature, merge rule, or route behavior in better-auth fails here.
+ * Request, wrapped in the ledger-context middleware from the docs, so a changed
+ * hook signature, merge rule, or route behavior in better-auth fails here. The
+ * no-context suite covers attribution without that middleware.
  *
  * Runs against the better-auth in devDependencies; CI also runs it against the
  * floor and the latest of the declared peer range.

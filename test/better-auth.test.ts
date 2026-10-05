@@ -107,6 +107,61 @@ describe("ledgerPlugin", () => {
     expect(entries[0]?.recordId).toBe("user-456");
   });
 
+  test("the hook context's session user wins over the ledger context (#46)", async () => {
+    const entries: LedgerAuditEntry[] = [];
+    const plugin = ledgerPlugin({
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+
+    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const userHooks = result?.options?.databaseHooks?.user;
+    const hookCtx = { context: { session: { user: { id: "session-admin" } } } };
+
+    await runWithLedgerContext(createLedgerContext({ userId: "ledger-actor" }), async () => {
+      await userHooks?.update?.after?.({ id: "user-456", banned: true }, hookCtx);
+    });
+    // No session on the hook context: the ledger context is next.
+    await runWithLedgerContext(createLedgerContext({ userId: "ledger-actor" }), async () => {
+      await userHooks?.update?.after?.({ id: "user-456" }, { context: { session: null } });
+    });
+    // Neither: the self-signup fallback still applies on user create.
+    await userHooks?.create?.after?.({ id: "user-new" }, { context: { session: null } });
+
+    expect(entries.map((e) => e.userId)).toEqual(["session-admin", "ledger-actor", "user-new"]);
+  });
+
+  test("update change sets pair on the hook context without a ledger context (#46)", async () => {
+    const entries: LedgerAuditEntry[] = [];
+    const plugin = ledgerPlugin({
+      writeAuditEntry: (entry) => {
+        entries.push(entry);
+        return Promise.resolve();
+      },
+    });
+
+    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const userHooks = result?.options?.databaseHooks?.user;
+    const requestA = { context: { session: { user: { id: "actor-a" } } } };
+    const requestB = { context: { session: { user: { id: "actor-b" } } } };
+
+    await userHooks?.update?.before?.({ name: "change-A" }, requestA);
+    await userHooks?.update?.before?.({ name: "change-B" }, requestB);
+    await userHooks?.update?.after?.({ id: "user-b", name: "change-B" }, requestB);
+    await userHooks?.update?.after?.({ id: "user-a", name: "change-A" }, requestA);
+
+    expect(entries.find((e) => e.recordId === "user-a")).toMatchObject({
+      oldData: { changed: { name: "change-A" } },
+      userId: "actor-a",
+    });
+    expect(entries.find((e) => e.recordId === "user-b")).toMatchObject({
+      oldData: { changed: { name: "change-B" } },
+      userId: "actor-b",
+    });
+  });
+
   test("update.before change set is paired into oldData as { changed } within a context", async () => {
     const entries: LedgerAuditEntry[] = [];
     const plugin = ledgerPlugin({

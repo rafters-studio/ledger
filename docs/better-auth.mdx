@@ -105,9 +105,21 @@ Substring matching over-redacts on purpose: `code` also strips `postalCode` and 
 | `action` | `"INSERT" \| "UPDATE" \| "SOFT_DELETE" \| "DELETE"` | The operation |
 | `oldData` | `Record<string, unknown> \| null` | Row state before the change; `null` for `INSERT`. On `DELETE`, the deleted row, redacted. |
 | `newData` | `Record<string, unknown> \| null` | Row state after the change; `null` for `DELETE` or `SOFT_DELETE` |
-| `userId` | `string \| null` | For `user` table events, this is the user's own ID. For `account` events, it is `null`. |
+| `userId` | `string \| null` | The acting principal. See [Attribution](#attribution). |
 
-Note: better-auth's `update.after` hook does not expose the previous row state, so `oldData` is always `null` on `UPDATE` entries from this plugin.
+Note: better-auth's `update.after` hook does not expose the previous row state. `oldData` on an `UPDATE` entry is `{ changed }`, the change set `update.before` received in the same request, never a full before-image.
+
+### Attribution
+
+better-auth passes every `databaseHook` the endpoint context as its second argument. The plugin reads the actor from it, so attribution needs no middleware and does not depend on ledger's own context storage: better-auth's endpoint context carries it. `userId` resolves in this order:
+
+1. The session user on the hook context (`ctx.context.session.user.id`).
+2. The ledger context's `userId`, when the request runs inside `runWithLedgerContext`.
+3. The target row's own id, for user sign-up (`INSERT` on `user`) and user deletion (`DELETE` or `SOFT_DELETE` on `user`) only. Anything else is `null`.
+
+Which writes carry a session on better-auth 1.7: the session is set by an endpoint's session middleware, so updates and deletes from an authenticated route carry it. That covers `updateUser`, the admin plugin's `updateUser`, `setRole`, and `banUser`, `unlinkAccount`, `revokeSession(s)`, and `deleteUser`. A user created by sign-up does not: sign-up runs no session middleware and creates the session after the user, so the new user's own id stands in. Sign-in, OAuth callbacks, and verification-token consumes carry none either. A write through `internalAdapter` outside any endpoint gets no hook context at all.
+
+`runWithLedgerContext` is still the way to attribute those session-less and out-of-endpoint writes, and to carry `ip`, `userAgent`, `endpoint`, and `requestId` for the rest of your audit trail. `assertLedgerContextAvailable()` remains an opt-in boot check for apps that rely on it.
 
 ### Delete entries
 
@@ -115,7 +127,7 @@ Every hard delete of a row in an audited table writes one `DELETE` entry from `d
 
 Bulk deletes (better-auth's `deleteManyWithHooks`, used by `deleteUser`, `revokeSessions`, and sign-out of every session) call the hook once per row, each with that row from a snapshot read before the delete. They never call it once with the where clause, so a bulk delete of three accounts writes three entries, each with its own `recordId`. Verification tokens consumed on use (`consumeOneWithHooks`) write one entry with the consumed row.
 
-The actor is the ledger context's `userId`. For a `user` row with no context, it falls back to the deleted user's own id, the same as `SOFT_DELETE`.
+The actor resolves as in [Attribution](#attribution). For a `user` row with no session and no ledger context, it falls back to the deleted user's own id, the same as `SOFT_DELETE`.
 
 ---
 

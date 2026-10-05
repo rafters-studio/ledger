@@ -53,4 +53,4 @@ jobs:
           ' "${{ matrix.edge }}")
           echo "better-auth $range -> ${{ matrix.edge }} $version"
           pnpm add -D "better-auth@$version"
-      - run: pnpm vitest run test/better-auth.integration.test.ts test/better-auth.test.ts
+      - run: pnpm vitest run test/better-auth.integration.test.ts test/better-auth.no-context.integration.test.ts test/better-auth.test.ts
