@@ -398,11 +398,10 @@ export function createAuditedDb<T extends object>(db: T, config: AuditedDbConfig
       throw new MissingPrimaryKeyError(tableName);
     }
 
-    // No once-guard: every execution of the statement (a prepared
-    // statement run again, a builder awaited twice) soft-deletes its
-    // rows again, so each one writes its own entries. The settle calls
-    // are not re-entrant: Drizzle's then/execute run on the unwrapped
-    // target, so one execution settles exactly once.
+    // Called once per execution, and every execution writes: a prepared
+    // statement run again or a builder awaited twice soft-deletes its
+    // rows again. Settle is not re-entrant (Drizzle's then/execute run
+    // on the unwrapped target), so one execution writes one entry set.
     const writeEntries = (recordIds: readonly string[]) => {
       for (const recordId of recordIds) {
         const entry = createAuditEntry({
