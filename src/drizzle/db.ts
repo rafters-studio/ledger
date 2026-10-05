@@ -233,8 +233,8 @@ interface ExecutionHooks {
  * Wrap a query builder so that every successful execution -- via direct
  * await, .catch(), .finally(), .execute(), .all(), .get(), .run(),
  * .values(), or any chain stage (.where(), .returning(), .prepare()) --
- * passes its result through hooks.settle. Chain methods return wrapped builders so the
- * observation survives chaining.
+ * passes its result through hooks.settle. Chain methods return wrapped
+ * builders so the observation survives chaining.
  */
 function observeExecution<T extends object>(
   builder: T,
