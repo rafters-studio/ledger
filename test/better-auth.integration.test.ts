@@ -375,6 +375,7 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
       const [row] = await db.select().from(user).where(eq(user.id, memberId));
       expect(row).toBeDefined();
       expect(row?.deletedAt).toBeInstanceOf(Date);
+      expect(row?.deletedBy).toBe(memberId);
       const after = await db.select().from(session).where(eq(session.userId, memberId));
       expect(after).toHaveLength(0);
 

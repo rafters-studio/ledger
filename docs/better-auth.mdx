@@ -160,7 +160,7 @@ export const auth = betterAuth({
 });
 ```
 
-`deletedBy` is currently written as `null`; actor attribution for deletes is tracked separately.
+`deletedBy` is the actor from the hook context's session user, else the ledger context's `userId`, so an admin's `removeUser` records the admin and a signed-in user deleting their own account records themselves. It is `null` only when neither names an actor. The `SOFT_DELETE` entry's `userId` resolves the same way and falls back to the deleted user's own id, as in [Attribution](#attribution).
 
 ### What better-auth still deletes
 
@@ -230,6 +230,8 @@ export const auth = betterAuth({
   },
 });
 ```
+
+`afterDelete` receives no hook context, so the entry's `userId` is the ledger context's `userId` when the request runs inside `runWithLedgerContext`, and the deleted user's own id otherwise.
 
 Errors inside `writeAuditEntry` are caught and logged; they do not propagate. The hard delete has already happened by the time `afterDelete` fires, so there is nothing left to abort.
 
