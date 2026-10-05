@@ -22,6 +22,7 @@ export {
 
 // Audited Database
 export { type AuditedDbConfig, createAuditedDb, getTableName, hasColumn } from "./db.js";
+export { MissingPrimaryKeyError, MissingSoftDeleteTablesError } from "../core/errors.js";
 
 // GDPR (Drizzle-coupled)
 export {
