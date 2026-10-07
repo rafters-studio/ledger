@@ -13,12 +13,12 @@
  */
 
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { type BetterAuthOptions, betterAuth } from "better-auth";
+import { type BetterAuthOptions, type BetterAuthPlugin, betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthEndpoint } from "better-auth/api";
 import { getAuthTables } from "better-auth/db";
 import { getMigrations } from "better-auth/db/migration";
-import { admin, testUtils } from "better-auth/plugins";
+import { admin, organization, testUtils } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
@@ -495,5 +495,425 @@ describe("better-auth integration: ledgerPlugin inside a real betterAuth() insta
 
     expect(rows.filter((e) => e.action === "PURGE")).toHaveLength(1);
     expect(await isUserDataPurged(db, auditLog, memberId)).toBe(true);
+  });
+});
+
+/**
+ * Atomic audit: auditTables without writeAuditEntry. The audit row is written
+ * through the better-auth adapter in the change's own transaction, for core
+ * tables, for tables the organization plugin writes straight through
+ * ctx.context.adapter, and for a plugin table with a `key` column.
+ */
+describe("better-auth integration: atomic audit of any named table", () => {
+  const sqlite = new DatabaseSync(":memory:");
+
+  /** Read a JSON-object request body; the test endpoints below take no schema. */
+  function bodyOf(body: unknown): Record<string, unknown> {
+    return typeof body === "object" && body !== null
+      ? Object.fromEntries(Object.entries(body))
+      : {};
+  }
+
+  // A plugin table whose secret column is named `key`: no default pattern
+  // other than "key" itself is a substring of it.
+  const vaultPlugin = {
+    id: "vault",
+    schema: {
+      vaultItem: {
+        fields: {
+          userId: { type: "string", required: true },
+          label: { type: "string", required: true },
+          key: { type: "string", required: false },
+        },
+      },
+    },
+    endpoints: {
+      createVaultItem: createAuthEndpoint("/vault/create", { method: "POST" }, async (ctx) => {
+        const body = bodyOf(ctx.body);
+        const created = await ctx.context.adapter.create({
+          model: "vaultItem",
+          data: { userId: body["userId"], label: body["label"], key: body["key"] },
+        });
+        return ctx.json(created);
+      }),
+      updateVaultItem: createAuthEndpoint("/vault/update", { method: "POST" }, async (ctx) => {
+        const body = bodyOf(ctx.body);
+        const updated = await ctx.context.adapter.update({
+          model: "vaultItem",
+          where: [{ field: "id", value: body["id"] }],
+          update: { label: body["label"], key: body["key"] },
+        });
+        return ctx.json(updated);
+      }),
+      deleteVaultItem: createAuthEndpoint("/vault/delete", { method: "POST" }, async (ctx) => {
+        const body = bodyOf(ctx.body);
+        await ctx.context.adapter.delete({
+          model: "vaultItem",
+          where: [{ field: "id", value: body["id"] }],
+        });
+        return ctx.json({ ok: true });
+      }),
+    },
+  } satisfies BetterAuthPlugin;
+
+  const options = {
+    baseURL: BASE_URL,
+    secret: TEST_SECRET,
+    database: sqlite,
+    emailAndPassword: { enabled: true },
+    rateLimit: { enabled: false },
+    logger: { disabled: true },
+    user: { deleteUser: { enabled: true } },
+    plugins: [
+      organization(),
+      vaultPlugin,
+      ledgerPlugin({
+        auditTables: ["user", "account", "session", "organization", "member", "vaultItem"],
+      }),
+    ],
+  } satisfies BetterAuthOptions;
+  const auth = betterAuth(options);
+
+  interface AuditRow {
+    tableName: string;
+    recordId: string;
+    action: string;
+    oldData: string | null;
+    newData: string | null;
+    userId: string | null;
+    subjectUserId: string | null;
+  }
+
+  function entries(filter: { tableName: string; action?: string; recordId?: string }): AuditRow[] {
+    const rows = sqlite
+      .prepare(
+        "SELECT tableName, recordId, action, oldData, newData, userId, subjectUserId FROM ledger_audit_log ORDER BY id",
+      )
+      .all() as unknown as AuditRow[];
+    return rows.filter(
+      (row) =>
+        row.tableName === filter.tableName &&
+        (filter.action === undefined || row.action === filter.action) &&
+        (filter.recordId === undefined || row.recordId === filter.recordId),
+    );
+  }
+
+  function rowCount(table: string): number {
+    const row = sqlite.prepare(`SELECT count(*) AS n FROM "${table}"`).get() as { n: number };
+    return row.n;
+  }
+
+  async function handle(request: Request): Promise<Response> {
+    const current = await auth.api.getSession({ headers: request.headers });
+    return runWithLedgerContext(createLedgerContext({ userId: current?.user.id ?? null }), () =>
+      auth.handler(request),
+    );
+  }
+
+  function post(path: string, body: Record<string, unknown>, headers?: Headers) {
+    const requestHeaders = new Headers(headers);
+    requestHeaders.set("content-type", "application/json");
+    requestHeaders.set("origin", BASE_URL);
+    return handle(
+      new Request(`${BASE_URL}/api/auth${path}`, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  function cookieHeaders(response: Response): Headers {
+    const cookies = response.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .filter((c): c is string => c !== undefined && c.length > 0);
+    return new Headers({ cookie: cookies.join("; ") });
+  }
+
+  const owner = { email: "owner@example.com", password: "owner-password-123", name: "Owner" };
+  let ownerId = "";
+  let ownerHeaders = new Headers();
+  let orgId = "";
+  let itemId = "";
+
+  beforeAll(async () => {
+    const { runMigrations } = await getMigrations({ ...auth.options, database: sqlite });
+    await runMigrations();
+  });
+
+  afterAll(() => {
+    sqlite.close();
+  });
+
+  test("user: sign-up, update, and the actor", async () => {
+    const response = await post("/sign-up/email", owner);
+    expect(response.status).toBe(200);
+    ownerId = ((await response.json()) as { user: { id: string } }).user.id;
+    ownerHeaders = cookieHeaders(response);
+
+    expect(entries({ tableName: "user", action: "INSERT", recordId: ownerId })).toMatchObject([
+      { userId: ownerId, subjectUserId: ownerId },
+    ]);
+    // The new session and the credential account were audited as well.
+    expect(entries({ tableName: "session", action: "INSERT" })).toHaveLength(1);
+    const accountInsert = entries({ tableName: "account", action: "INSERT" });
+    expect(accountInsert).toHaveLength(1);
+    expect(JSON.parse(accountInsert[0]?.newData ?? "{}")).toMatchObject({ password: "[REDACTED]" });
+    expect(accountInsert[0]?.subjectUserId).toBe(ownerId);
+
+    const update = await post("/update-user", { name: "Owner Renamed" }, ownerHeaders);
+    expect(update.status).toBe(200);
+    const updates = entries({ tableName: "user", action: "UPDATE", recordId: ownerId });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.userId).toBe(ownerId);
+    // A true before-image, not just the change set.
+    expect(JSON.parse(updates[0]?.oldData ?? "{}")).toMatchObject({ name: "Owner" });
+    expect(JSON.parse(updates[0]?.newData ?? "{}")).toMatchObject({ name: "Owner Renamed" });
+  });
+
+  test("organization and member: plugin tables written straight through the adapter", async () => {
+    const response = await post(
+      "/organization/create",
+      { name: "Acme", slug: "acme" },
+      ownerHeaders,
+    );
+    expect(response.status).toBe(200);
+    orgId = ((await response.json()) as { id: string }).id;
+
+    const orgInsert = entries({ tableName: "organization", action: "INSERT", recordId: orgId });
+    expect(orgInsert).toMatchObject([{ userId: ownerId, subjectUserId: null }]);
+    expect(JSON.parse(orgInsert[0]?.newData ?? "{}")).toMatchObject({ name: "Acme" });
+    const memberInsert = entries({ tableName: "member", action: "INSERT" });
+    expect(memberInsert).toHaveLength(1);
+    expect(memberInsert[0]).toMatchObject({ userId: ownerId, subjectUserId: ownerId });
+
+    const update = await post(
+      "/organization/update",
+      { organizationId: orgId, data: { name: "Acme Inc" } },
+      ownerHeaders,
+    );
+    expect(update.status).toBe(200);
+    const orgUpdate = entries({ tableName: "organization", action: "UPDATE", recordId: orgId });
+    expect(orgUpdate).toHaveLength(1);
+    expect(orgUpdate[0]?.userId).toBe(ownerId);
+    expect(JSON.parse(orgUpdate[0]?.oldData ?? "{}")).toMatchObject({ name: "Acme" });
+    expect(JSON.parse(orgUpdate[0]?.newData ?? "{}")).toMatchObject({ name: "Acme Inc" });
+
+    const removal = await post("/organization/delete", { organizationId: orgId }, ownerHeaders);
+    expect(removal.status).toBe(200);
+    const orgDelete = entries({ tableName: "organization", action: "DELETE", recordId: orgId });
+    expect(orgDelete).toMatchObject([{ userId: ownerId }]);
+    expect(JSON.parse(orgDelete[0]?.oldData ?? "{}")).toMatchObject({ name: "Acme Inc" });
+    expect(orgDelete[0]?.newData).toBeNull();
+    expect(entries({ tableName: "member", action: "DELETE" })).toHaveLength(1);
+  });
+
+  test("a plugin table with a `key` column is redacted, and the row itself is not", async () => {
+    const created = await post(
+      "/vault/create",
+      { userId: ownerId, label: "deploy", key: "sk-live-super-secret" },
+      ownerHeaders,
+    );
+    expect(created.status).toBe(200);
+    itemId = ((await created.json()) as { id: string }).id;
+
+    const insert = entries({ tableName: "vaultItem", action: "INSERT", recordId: itemId });
+    expect(insert).toMatchObject([{ userId: ownerId, subjectUserId: ownerId }]);
+    expect(JSON.parse(insert[0]?.newData ?? "{}")).toMatchObject({
+      label: "deploy",
+      key: "[REDACTED]",
+    });
+    expect(insert[0]?.newData).not.toContain("sk-live-super-secret");
+    const stored = sqlite.prepare('SELECT "key" FROM "vaultItem" WHERE id = ?').get(itemId) as {
+      key: string;
+    };
+    expect(stored.key).toBe("sk-live-super-secret");
+
+    const updated = await post(
+      "/vault/update",
+      { id: itemId, label: "deploy-2", key: "sk-live-rotated" },
+      ownerHeaders,
+    );
+    expect(updated.status).toBe(200);
+    const update = entries({ tableName: "vaultItem", action: "UPDATE", recordId: itemId });
+    expect(update).toHaveLength(1);
+    expect(update[0]?.oldData).not.toContain("sk-live");
+    expect(update[0]?.newData).not.toContain("sk-live");
+    expect(JSON.parse(update[0]?.oldData ?? "{}")).toMatchObject({ label: "deploy" });
+  });
+
+  test("a forced audit-write failure leaves no change, and the caller gets the error", async () => {
+    sqlite.exec(
+      "CREATE TRIGGER force_audit_failure BEFORE INSERT ON ledger_audit_log BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END",
+    );
+    try {
+      const itemsBefore = rowCount("vaultItem");
+      const created = await post(
+        "/vault/create",
+        { userId: ownerId, label: "never-written", key: "x" },
+        ownerHeaders,
+      );
+      expect(created.status).toBeGreaterThanOrEqual(500);
+      expect(rowCount("vaultItem")).toBe(itemsBefore);
+
+      const update = await post("/update-user", { name: "Never Applied" }, ownerHeaders);
+      expect(update.status).toBeGreaterThanOrEqual(500);
+      const row = sqlite.prepare("SELECT name FROM user WHERE id = ?").get(ownerId) as {
+        name: string;
+      };
+      expect(row.name).toBe("Owner Renamed");
+    } finally {
+      sqlite.exec("DROP TRIGGER force_audit_failure");
+    }
+  });
+
+  test("a forced change failure leaves no audit row", async () => {
+    sqlite.exec(
+      "CREATE TRIGGER force_change_failure BEFORE DELETE ON vaultItem BEGIN SELECT RAISE(ABORT, 'forced change failure'); END",
+    );
+    try {
+      const auditBefore = rowCount("ledger_audit_log");
+      const removal = await post("/vault/delete", { id: itemId }, ownerHeaders);
+      expect(removal.status).toBeGreaterThanOrEqual(500);
+      expect(rowCount("vaultItem")).toBe(1);
+      expect(rowCount("ledger_audit_log")).toBe(auditBefore);
+    } finally {
+      sqlite.exec("DROP TRIGGER force_change_failure");
+    }
+  });
+
+  test("a plugin-table delete writes a DELETE entry naming the actor", async () => {
+    const removal = await post("/vault/delete", { id: itemId }, ownerHeaders);
+    expect(removal.status).toBe(200);
+    const deletes = entries({ tableName: "vaultItem", action: "DELETE", recordId: itemId });
+    expect(deletes).toMatchObject([{ userId: ownerId, subjectUserId: ownerId, newData: null }]);
+    expect(deletes[0]?.oldData).not.toContain("sk-live");
+  });
+
+  test("a user hard delete writes DELETE entries for the user, account, and session", async () => {
+    const response = await post("/delete-user", { password: owner.password }, ownerHeaders);
+    expect(response.status).toBe(200);
+    expect(entries({ tableName: "user", action: "DELETE", recordId: ownerId })).toMatchObject([
+      { userId: ownerId, subjectUserId: ownerId, newData: null },
+    ]);
+    expect(entries({ tableName: "account", action: "DELETE" })).toHaveLength(1);
+    expect(entries({ tableName: "session", action: "DELETE" })).toHaveLength(1);
+    expect(rowCount("user")).toBe(0);
+  });
+});
+
+describe("better-auth integration: atomic audit refuses what it cannot do atomically", () => {
+  test("an auditTables name that is not a model in the schema fails at init", async () => {
+    const sqlite = new DatabaseSync(":memory:");
+    const auth = betterAuth({
+      baseURL: BASE_URL,
+      secret: TEST_SECRET,
+      database: sqlite,
+      logger: { disabled: true },
+      plugins: [ledgerPlugin({ auditTables: ["user", "passkey"] })],
+    });
+    await expect(auth.$context).rejects.toThrow(/"passkey".*not a model/);
+    sqlite.close();
+  });
+
+  test("an adapter without real transactions fails at init instead of auditing non-atomically", async () => {
+    const sqlite = new DatabaseSync(":memory:");
+    const db = drizzle(async (sql, params, method) => runProxyQuery(sqlite, sql, params, method));
+    const auth = betterAuth({
+      baseURL: BASE_URL,
+      secret: TEST_SECRET,
+      database: drizzleAdapter(db, {
+        provider: "sqlite",
+        schema: { user, session, account, verification },
+      }),
+      logger: { disabled: true },
+      plugins: [ledgerPlugin({ auditTables: ["user"] })],
+    });
+    await expect(auth.$context).rejects.toThrow(/real transactions/);
+    sqlite.close();
+  });
+});
+
+describe("better-auth integration: atomic audit with softDeleteUser", () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const auth = betterAuth({
+    baseURL: BASE_URL,
+    secret: TEST_SECRET,
+    database: sqlite,
+    emailAndPassword: { enabled: true },
+    rateLimit: { enabled: false },
+    logger: { disabled: true },
+    user: {
+      additionalFields: {
+        deletedAt: { type: "date", required: false, input: false },
+        deletedBy: { type: "string", required: false, input: false },
+      },
+      deleteUser: { enabled: true },
+    },
+    plugins: [ledgerPlugin({ auditTables: ["user"], softDeleteUser: true })],
+  });
+
+  beforeAll(async () => {
+    const { runMigrations } = await getMigrations({ ...auth.options, database: sqlite });
+    await runMigrations();
+  });
+
+  afterAll(() => {
+    sqlite.close();
+  });
+
+  test("a soft delete writes one SOFT_DELETE entry with the row, and no UPDATE", async () => {
+    const headers = new Headers({ "content-type": "application/json", origin: BASE_URL });
+    const signUp = await auth.handler(
+      new Request(`${BASE_URL}/api/auth/sign-up/email`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          email: "gone@example.com",
+          password: "gone-password-123",
+          name: "Gone",
+        }),
+      }),
+    );
+    expect(signUp.status).toBe(200);
+    const userId = ((await signUp.json()) as { user: { id: string } }).user.id;
+    const cookie = signUp.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const removal = await auth.handler(
+      new Request(`${BASE_URL}/api/auth/delete-user`, {
+        method: "POST",
+        headers: new Headers({ ...Object.fromEntries(headers), cookie }),
+        body: JSON.stringify({ password: "gone-password-123" }),
+      }),
+    );
+    expect(removal.status).toBe(200);
+
+    const rows = sqlite
+      .prepare("SELECT action, userId, oldData, newData FROM ledger_audit_log WHERE recordId = ?")
+      .all(userId) as unknown as {
+      action: string;
+      userId: string | null;
+      oldData: string | null;
+      newData: string | null;
+    }[];
+    expect(rows.map((r) => r.action).sort()).toEqual(["INSERT", "SOFT_DELETE"]);
+    const soft = rows.find((r) => r.action === "SOFT_DELETE");
+    expect(soft?.userId).toBe(userId);
+    expect(JSON.parse(soft?.oldData ?? "{}")).toMatchObject({ email: "gone@example.com" });
+    expect(JSON.parse(soft?.newData ?? "{}")).toMatchObject({ email: "gone@example.com" });
+    expect(JSON.parse(soft?.newData ?? "{}")["deletedAt"]).toBeTruthy();
+
+    const row = sqlite
+      .prepare("SELECT deletedAt, deletedBy FROM user WHERE id = ?")
+      .get(userId) as {
+      deletedAt: number | null;
+      deletedBy: string | null;
+    };
+    expect(row.deletedAt).not.toBeNull();
+    expect(row.deletedBy).toBe(userId);
   });
 });

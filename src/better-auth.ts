@@ -35,12 +35,25 @@ import type { AuthContext, BetterAuthPlugin, User } from "better-auth";
 import { getLedgerContext } from "./core/context.js";
 import { softDeleteValues } from "./core/soft-delete.js";
 import { redactTableRow } from "./core/redact.js";
+import {
+  ACTOR_KEY,
+  LEDGER_AUDIT_MODEL,
+  SOFT_DELETE_KEY,
+  atomicAdapter,
+  ledgerAuditSchema,
+  supportsTransactions,
+} from "./better-auth-atomic.js";
+import { d1Adapter, d1HandleOf, looksLikeD1 } from "./better-auth-d1.js";
+
+export { ledgerD1 } from "./better-auth-d1.js";
+export type { D1Like, D1ResultLike, D1StatementLike } from "./better-auth-d1.js";
+export { LEDGER_AUDIT_MODEL, LEDGER_AUDIT_TABLE, ledgerAuditSchema } from "./better-auth-atomic.js";
 
 /**
  * Audit entry passed to the writeAuditEntry callback.
  */
 export interface LedgerAuditEntry {
-  /** The table name (user, account, session, verification) */
+  /** The table name: a model in the better-auth schema (user, account, session, ...) */
   tableName: string;
   /** The record ID */
   recordId: string;
@@ -84,9 +97,22 @@ export interface LedgerPluginConfig {
    */
   writeAuditEntry?: (entry: LedgerAuditEntry) => Promise<void>;
   /**
-   * Tables to audit. Defaults to ['user']. Each audited table gets an
-   * INSERT entry on create, an UPDATE entry on update, and a DELETE entry
-   * (oldData = the deleted row, redacted) on every hard delete.
+   * Tables to audit: any model in the better-auth instance's schema, core
+   * or plugin, for example "user", "account", "session", "passkey",
+   * "apikey", "organization", "member", "invitation". Defaults to
+   * ["user"]. A name that is not a model in the schema throws at init.
+   *
+   * Set auditTables WITHOUT writeAuditEntry and each change and its audit
+   * row are written in one database transaction (see docs/better-auth.mdx
+   * "Atomic audit"): the change and its row exist together or not at all,
+   * and a failed audit write fails the change. That needs a better-auth
+   * adapter with real transactions, or a Cloudflare D1 binding wrapped in
+   * ledgerD1() (one batch() per write); init throws on anything else. Set
+   * writeAuditEntry and the callback path runs instead: the entry is
+   * written after the change, and a failed write is logged, never thrown.
+   *
+   * Each audited table gets an INSERT entry on create, an UPDATE entry on
+   * update, and a DELETE entry on every hard delete.
    *
    * WARNING: 'account' rows carry OAuth accessToken/refreshToken/idToken
    * and credential password hashes. Redaction strips those fields before
@@ -98,7 +124,7 @@ export interface LedgerPluginConfig {
    * excluded by default due to high volume: every sign-in, refresh,
    * sign-out, and revocation writes an entry once it is listed.
    */
-  auditTables?: ("user" | "account" | "session" | "verification")[];
+  auditTables?: readonly string[];
   /**
    * Additional key patterns to redact beyond DEFAULT_SECRET_PATTERNS
    * (token, secret, password, apikey, api_key, otp, code, hash, salt,
@@ -218,6 +244,9 @@ function resolveActor(ctx: HookContext, fallback: string | null = null): string 
  */
 export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
   const auditTables = config?.auditTables ?? ["user"];
+  // Atomic mode: auditTables named, no callback to write through. The
+  // callback path stays for writeAuditEntry users.
+  const atomic = config?.auditTables !== undefined && config.writeAuditEntry === undefined;
   const softDeleteUser = config?.softDeleteUser === true;
   const writeAuditEntry = config?.writeAuditEntry;
   const redactPatterns = config?.redactPatterns;
@@ -267,7 +296,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     return ctx ?? getLedgerContext();
   }
 
-  for (const table of auditTables) {
+  for (const table of atomic ? [] : auditTables) {
     databaseHooks[table] = {
       create: {
         after: async (data: UserWithId, ctx: HookContext) => {
@@ -352,7 +381,7 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
    * whose sessions are being revoked. Returning false skips the row
    * delete; the route goes on to revoke sessions and answer success.
    */
-  function softDeleteUserHook(ctx: AuthContext) {
+  function softDeleteUserHook(ctx: AuthContext, adapter: AuthContext["adapter"] = ctx.adapter) {
     const fields = ctx.tables.user?.fields ?? {};
     if (!("deletedAt" in fields)) {
       throw new Error(
@@ -368,14 +397,20 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
       // does; the column records only a known actor.
       const actor = resolveActor(hookCtx);
       const values = softDeleteValues(actor);
-      await ctx.adapter.update({
+      await adapter.update({
         model: "user",
         where: [{ field: "id", value: user.id }],
         update: {
           deletedAt: values.deletedAt,
           ...(hasDeletedBy ? { deletedBy: values.deletedBy } : {}),
+          // Atomic mode: the atomic adapter strips these marks and writes
+          // the SOFT_DELETE entry in the same transaction as this update.
+          ...(atomic
+            ? { [SOFT_DELETE_KEY]: true, ...(actor === null ? {} : { [ACTOR_KEY]: actor }) }
+            : {}),
         },
       });
+      if (atomic) return false;
       await audit({
         tableName: "user",
         recordId: user.id,
@@ -388,9 +423,103 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     };
   }
 
+  /** Actors that delete.before hooks saw, by "model:id", for the atomic adapter to attribute deletes. */
+  const deleteActors = new Map<string, string>();
+  const MAX_PENDING_DELETE_ACTORS = 10_000;
+
+  function atomicHooks(): Record<string, unknown> {
+    const hooks: Record<string, unknown> = {};
+    // Before hooks only: they see the hook context (the session actor) and
+    // hand it to the atomic adapter. The audit row itself is written by the
+    // adapter, in the change's transaction, never from an after hook.
+    const markActor = (_data: unknown, ctx: HookContext) => {
+      const actor = resolveActor(ctx);
+      return actor === null ? undefined : { data: { [ACTOR_KEY]: actor } };
+    };
+    for (const table of auditTables) {
+      hooks[table] = {
+        create: { before: markActor },
+        update: { before: markActor },
+        delete: {
+          before: async (row: UserWithId, ctx: HookContext) => {
+            const actor = resolveActor(ctx);
+            if (actor === null) return;
+            deleteActors.set(`${table}:${row.id}`, actor);
+            if (deleteActors.size > MAX_PENDING_DELETE_ACTORS) {
+              const oldest = deleteActors.keys().next();
+              if (!oldest.done) deleteActors.delete(oldest.value);
+            }
+          },
+        },
+      };
+    }
+    return hooks;
+  }
+
+  function validateAuditTables(ctx: AuthContext): void {
+    for (const table of auditTables) {
+      if (table === LEDGER_AUDIT_MODEL) {
+        throw new Error(
+          `[ledger] auditTables names "${table}", ledger's own audit model; it cannot audit itself`,
+        );
+      }
+      if (!Object.hasOwn(ctx.tables, table)) {
+        throw new Error(
+          `[ledger] auditTables names "${table}", which is not a model in the better-auth schema. Models: ${Object.keys(ctx.tables).join(", ")}`,
+        );
+      }
+    }
+  }
+
   return {
     id: "ledger",
+    ...(atomic ? { schema: ledgerAuditSchema } : {}),
     init: (ctx) => {
+      validateAuditTables(ctx);
+      if (atomic) {
+        const d1 = supportsTransactions(ctx.adapter) ? null : d1HandleOf(ctx.options.database);
+        if (d1 === null && !supportsTransactions(ctx.adapter)) {
+          throw new Error(
+            looksLikeD1(ctx.options.database)
+              ? "[ledger] atomic audit on D1 needs the binding wrapped: betterAuth({ database: ledgerD1(env.DB) }). D1 has no interactive transactions, so ledger writes each change and its audit row as one D1 batch() through the wrapped binding. Or pass writeAuditEntry for the non-atomic callback path."
+              : "[ledger] atomic audit needs a better-auth adapter with real transactions, and this one runs transaction() as plain sequential calls (drizzleAdapter needs transaction: true). Use an adapter with transactions, a D1 binding wrapped in ledgerD1(), or pass writeAuditEntry for the non-atomic callback path.",
+          );
+        }
+        const audited = new Map<string, string>();
+        for (const table of auditTables) {
+          audited.set(table, table);
+          const physical = ctx.tables[table]?.modelName;
+          if (physical) audited.set(physical, table);
+        }
+        const atomicEnv = {
+          audited,
+          redact: (model: string, data: Record<string, unknown> | null) =>
+            redactTableRow(model, data, redactPatterns),
+          takeDeleteActor: (model: string, id: string) => {
+            const key = `${model}:${id}`;
+            const actor = deleteActors.get(key) ?? null;
+            deleteActors.delete(key);
+            return actor;
+          },
+        };
+        const adapter = d1
+          ? d1Adapter(ctx.adapter, {
+              ...atomicEnv,
+              d1,
+              tables: ctx.tables,
+              generateId: (model) => ctx.generateId({ model }),
+            })
+          : atomicAdapter(ctx.adapter, atomicEnv);
+        const hooks = atomicHooks();
+        if (softDeleteUser) {
+          const userHooks = hooks["user"] as { delete?: object } | undefined;
+          hooks["user"] = {
+            ...userHooks,
+            delete: { before: softDeleteUserHook(ctx, adapter) },
+          };
+        }
+        return { options: { databaseHooks: hooks }, context: { adapter } };
+      }
       if (!softDeleteUser) return { options: { databaseHooks } };
       // A fresh object per init: better-auth keeps the hooks by reference, so
       // mutating the shared one would point an earlier instance's hook at a

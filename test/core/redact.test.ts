@@ -160,6 +160,7 @@ describe("redactSensitiveFields", () => {
       "private_key",
       "authorization",
       "cookie",
+      "key",
     ]);
   });
 });
