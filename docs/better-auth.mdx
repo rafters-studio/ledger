@@ -133,11 +133,37 @@ export const auth = betterAuth({
 
 **Actor.** For writes that pass through better-auth's `databaseHooks` (everything `internalAdapter` does), the actor is the hook context's session user, as in [Attribution](#attribution). A plugin endpoint that writes through `ctx.context.adapter` runs no hook, so its actor is the ledger context's `userId`: run requests inside `runWithLedgerContext`, or the entry's `userId` is `null`.
 
-**What it needs.** An adapter whose `transaction()` is real: better-auth's built-in SQLite, Postgres, and MySQL through Kysely, and `drizzleAdapter` with `transaction: true` over a driver with transactions. `ledgerPlugin` throws at init on one without. **Cloudflare D1 is such an adapter**: D1 has no interactive transactions, only `D1Database.batch()`, and better-auth's adapters expose no batch, so the atomic path does not run on D1 today.
+**What it needs.** Either an adapter whose `transaction()` is real (better-auth's built-in SQLite, Postgres, and MySQL through Kysely, and `drizzleAdapter` with `transaction: true` over a driver with transactions), or a Cloudflare D1 binding wrapped in `ledgerD1()`. `ledgerPlugin` throws at init on anything else.
+
+### Atomic audit on Cloudflare D1
+
+D1 has no interactive transactions. Its only atomic unit is `D1Database.batch()`, and better-auth's adapters expose no batch, so the transaction path above cannot run there. Wrap the binding you hand to better-auth:
+
+```typescript
+import { betterAuth } from "better-auth";
+import { ledgerD1, ledgerPlugin } from "@rafters/ledger/better-auth";
+
+export function createAuth(env: { DB: D1Database }) {
+  return betterAuth({
+    database: ledgerD1(env.DB),
+    plugins: [ledgerPlugin({ auditTables: ["user", "account", "organization", "member"] })],
+  });
+}
+```
+
+**How.** For each write to an audited model the adapter wrapper runs better-auth's own write once in a capture scope. `ledgerD1` records the one SQL statement better-auth would have run instead of running it. Ledger then sends D1 a single `batch()`: the audit statements, the change, and the audit statements that read the changed row. The batch commits or rolls back as a whole, so a failed audit write undoes the change and a failed change leaves no audit row. Outside an audited write, `ledgerD1` is the binding unchanged. It needs `AsyncLocalStorage` (Workers: the `nodejs_compat` flag) to keep one request's writes apart from another's.
+
+The audit row's JSON is built by SQLite inside the batch, from the table's own columns, so `oldData` is the row as it stood when the batch ran and `newData` is the row the batch left. Differences from the transaction path:
+
+- The JSON holds the stored column values: a boolean is `0` or `1`, a date is its stored text.
+- Secret columns are decided by the same redaction rules and written as the literal `"[REDACTED]"`; the column is never selected.
+- Better-auth reads the rows an `update`, `updateMany`, `delete`, or `deleteMany` touches before the batch to know which audit rows to write. If the set of matching rows changes between that read and the batch, the batch fails a row-count check, rolls back, and the caller gets a `LedgerAtomicAuditError`; nothing was written and the write can be retried.
+- `transaction()` on D1 cannot hold a transaction open. Calls inside it run in sequence, and each audited write is atomic with its own audit row, but two audited writes in one better-auth flow are two batches.
+- better-auth must generate the row ids (its default). With `generateId: false` or `"serial"` the database assigns the id, the batch cannot name the new row, and the create throws.
 
 **Not covered.** The audit table is not append-only (add the triggers from `sql/sqlite/audit.sql` for `ledger_audit_log` if you need that), `purgeUserData` does not read it, and failed sign-ins are not audit data. Do not list `ledgerAudit` in `auditTables`; init throws.
 
-**Choosing a path.** `writeAuditEntry` keeps the callback path: the entry is written after the change, errors are logged and never thrown, and `auditTables` still names the tables. Use it where the adapter has no transactions.
+**Choosing a path.** `writeAuditEntry` keeps the callback path: the entry is written after the change, errors are logged and never thrown, and `auditTables` still names the tables. Use it where the adapter has no transactions and you do not wrap a D1 binding.
 
 ### `LedgerAuditEntry` shape
 

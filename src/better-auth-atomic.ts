@@ -62,7 +62,7 @@ export const ACTOR_KEY: unique symbol = Symbol.for("@rafters/ledger.actor");
 /** Marks the softDeleteUser update so the wrapper records SOFT_DELETE, not UPDATE. */
 export const SOFT_DELETE_KEY: unique symbol = Symbol.for("@rafters/ledger.soft-delete");
 
-type Marked = Row & { [ACTOR_KEY]?: string; [SOFT_DELETE_KEY]?: true };
+export type Marked = Row & { [ACTOR_KEY]?: string; [SOFT_DELETE_KEY]?: true };
 
 /** Raised when the atomic audit row cannot be built; the change is rolled back. */
 export class LedgerAtomicAuditError extends Error {
@@ -84,7 +84,7 @@ export function subjectOf(model: string, row: Row | null): string | null {
   return typeof row["userId"] === "string" ? row["userId"] : null;
 }
 
-function idOf(model: string, row: Row | null): string {
+export function idOf(model: string, row: Row | null): string {
   const id = row?.["id"];
   if (typeof id === "string" || typeof id === "number") return String(id);
   throw new LedgerAtomicAuditError(
@@ -92,7 +92,7 @@ function idOf(model: string, row: Row | null): string {
   );
 }
 
-function split(source: Row | undefined): { clean: Row; marks: Marked } {
+export function split(source: Row | undefined): { clean: Row; marks: Marked } {
   const marks: Marked = {};
   if (source === undefined) return { clean: {}, marks };
   const clean: Row = { ...source };
@@ -112,7 +112,7 @@ export interface AtomicEnv {
   takeDeleteActor: (model: string, id: string) => string | null;
 }
 
-function actorFor(
+export function actorFor(
   model: string,
   action: AtomicAction,
   hooked: string | undefined,

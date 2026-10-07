@@ -43,7 +43,10 @@ import {
   ledgerAuditSchema,
   supportsTransactions,
 } from "./better-auth-atomic.js";
+import { d1Adapter, d1HandleOf, looksLikeD1 } from "./better-auth-d1.js";
 
+export { ledgerD1 } from "./better-auth-d1.js";
+export type { D1Like, D1ResultLike, D1StatementLike } from "./better-auth-d1.js";
 export { LEDGER_AUDIT_MODEL, LEDGER_AUDIT_TABLE, ledgerAuditSchema } from "./better-auth-atomic.js";
 
 /**
@@ -103,7 +106,8 @@ export interface LedgerPluginConfig {
    * row are written in one database transaction (see docs/better-auth.mdx
    * "Atomic audit"): the change and its row exist together or not at all,
    * and a failed audit write fails the change. That needs a better-auth
-   * adapter with real transactions; init throws on one without. Set
+   * adapter with real transactions, or a Cloudflare D1 binding wrapped in
+   * ledgerD1() (one batch() per write); init throws on anything else. Set
    * writeAuditEntry and the callback path runs instead: the entry is
    * written after the change, and a failed write is logged, never thrown.
    *
@@ -473,9 +477,12 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
     init: (ctx) => {
       validateAuditTables(ctx);
       if (atomic) {
-        if (!supportsTransactions(ctx.adapter)) {
+        const d1 = supportsTransactions(ctx.adapter) ? null : d1HandleOf(ctx.options.database);
+        if (d1 === null && !supportsTransactions(ctx.adapter)) {
           throw new Error(
-            "[ledger] atomic audit needs a better-auth adapter with real transactions, and this one runs transaction() as plain sequential calls (D1 has none; drizzleAdapter needs transaction: true). Use an adapter with transactions, or pass writeAuditEntry for the non-atomic callback path.",
+            looksLikeD1(ctx.options.database)
+              ? "[ledger] atomic audit on D1 needs the binding wrapped: betterAuth({ database: ledgerD1(env.DB) }). D1 has no interactive transactions, so ledger writes each change and its audit row as one D1 batch() through the wrapped binding. Or pass writeAuditEntry for the non-atomic callback path."
+              : "[ledger] atomic audit needs a better-auth adapter with real transactions, and this one runs transaction() as plain sequential calls (drizzleAdapter needs transaction: true). Use an adapter with transactions, a D1 binding wrapped in ledgerD1(), or pass writeAuditEntry for the non-atomic callback path.",
           );
         }
         const audited = new Map<string, string>();
@@ -484,16 +491,25 @@ export function ledgerPlugin(config?: LedgerPluginConfig): BetterAuthPlugin {
           const physical = ctx.tables[table]?.modelName;
           if (physical) audited.set(physical, table);
         }
-        const adapter = atomicAdapter(ctx.adapter, {
+        const atomicEnv = {
           audited,
-          redact: (model, data) => redactTableRow(model, data, redactPatterns),
-          takeDeleteActor: (model, id) => {
+          redact: (model: string, data: Record<string, unknown> | null) =>
+            redactTableRow(model, data, redactPatterns),
+          takeDeleteActor: (model: string, id: string) => {
             const key = `${model}:${id}`;
             const actor = deleteActors.get(key) ?? null;
             deleteActors.delete(key);
             return actor;
           },
-        });
+        };
+        const adapter = d1
+          ? d1Adapter(ctx.adapter, {
+              ...atomicEnv,
+              d1,
+              tables: ctx.tables,
+              generateId: (model) => ctx.generateId({ model }),
+            })
+          : atomicAdapter(ctx.adapter, atomicEnv);
         const hooks = atomicHooks();
         if (softDeleteUser) {
           const userHooks = hooks["user"] as { delete?: object } | undefined;
