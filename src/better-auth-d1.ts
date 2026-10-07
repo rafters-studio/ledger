@@ -356,6 +356,23 @@ export function d1Adapter(adapter: Adapter, env: D1Env): Adapter {
     after: D1StatementLike[];
   }
 
+  /** Audit the rows an update touches: before-image first, then fill newData after the change. */
+  function updatePlan(
+    key: string,
+    action: AtomicAction,
+    ids: string[],
+    actorOf: (id: string) => string | null,
+  ): Plan {
+    const auditIds = ids.map(() => uuidv7());
+    return {
+      before: ids.map((id, index) =>
+        rowStatement(key, action, id, "old", actorOf(id), auditIds[index] ?? ""),
+      ),
+      expect: ids.length,
+      after: ids.map((id, index) => fillNewStatement(key, id, auditIds[index] ?? "")),
+    };
+  }
+
   /** Capture the change, then run [before, change, guard, after] as one batch. */
   async function commit(
     key: string,
@@ -434,21 +451,11 @@ export function d1Adapter(adapter: Adapter, env: D1Env): Adapter {
       const rows = await adapter.findMany<Row>({ model: args.model, where: args.where });
       const ids = rows.map((row) => idOf(key, row));
       const action = marks[SOFT_DELETE_KEY] === true ? "SOFT_DELETE" : "UPDATE";
-      const auditIds = ids.map(() => uuidv7());
-      await commit(key, () => adapter.update<Row>({ ...args, update: clean }), {
-        before: ids.map((id, index) =>
-          rowStatement(
-            key,
-            action,
-            id,
-            "old",
-            actorFor(key, action, marks[ACTOR_KEY], { id }),
-            auditIds[index] ?? "",
-          ),
-        ),
-        expect: ids.length,
-        after: ids.map((id, index) => fillNewStatement(key, id, auditIds[index] ?? "")),
-      });
+      await commit(
+        key,
+        () => adapter.update<Row>({ ...args, update: clean }),
+        updatePlan(key, action, ids, (id) => actorFor(key, action, marks[ACTOR_KEY], { id })),
+      );
       const first = ids[0];
       if (first === undefined) return null as never;
       return (await adapter.findOne({
@@ -463,21 +470,11 @@ export function d1Adapter(adapter: Adapter, env: D1Env): Adapter {
       const { clean, marks } = split(args.update);
       const rows = await adapter.findMany<Row>({ model: args.model, where: args.where });
       const ids = rows.map((row) => idOf(key, row));
-      const auditIds = ids.map(() => uuidv7());
-      const result = await commit(key, () => adapter.updateMany({ ...args, update: clean }), {
-        before: ids.map((id, index) =>
-          rowStatement(
-            key,
-            "UPDATE",
-            id,
-            "old",
-            actorFor(key, "UPDATE", marks[ACTOR_KEY], { id }),
-            auditIds[index] ?? "",
-          ),
-        ),
-        expect: ids.length,
-        after: ids.map((id, index) => fillNewStatement(key, id, auditIds[index] ?? "")),
-      });
+      const result = await commit(
+        key,
+        () => adapter.updateMany({ ...args, update: clean }),
+        updatePlan(key, "UPDATE", ids, (id) => actorFor(key, "UPDATE", marks[ACTOR_KEY], { id })),
+      );
       return result.meta.changes ?? 0;
     },
 
@@ -519,21 +516,11 @@ export function d1Adapter(adapter: Adapter, env: D1Env): Adapter {
       if (key === undefined) return adapter.incrementOne(args);
       const row = await adapter.findOne<Row>({ model: args.model, where: args.where });
       const ids = row === null ? [] : [idOf(key, row)];
-      const auditIds = ids.map(() => uuidv7());
-      await commit(key, () => adapter.incrementOne<Row>(args), {
-        before: ids.map((id, index) =>
-          rowStatement(
-            key,
-            "UPDATE",
-            id,
-            "old",
-            actorFor(key, "UPDATE", undefined, { id }),
-            auditIds[index] ?? "",
-          ),
-        ),
-        expect: ids.length,
-        after: ids.map((id, index) => fillNewStatement(key, id, auditIds[index] ?? "")),
-      });
+      await commit(
+        key,
+        () => adapter.incrementOne<Row>(args),
+        updatePlan(key, "UPDATE", ids, (id) => actorFor(key, "UPDATE", undefined, { id })),
+      );
       const first = ids[0];
       if (first === undefined) return null as never;
       return (await adapter.findOne({
