@@ -16,7 +16,7 @@ The peer range is `better-auth >=1.7.0 <2.0.0`. 1.7 added `databaseHooks.<model>
 
 ## `ledgerPlugin`
 
-Registers `databaseHooks` inside better-auth for the `create.after`, `update.after`, and `delete.after` lifecycle events on audited tables. Each event fires `writeAuditEntry` as fire-and-forget: errors are logged via `console.error` and never rethrow into the auth flow.
+With `writeAuditEntry`, the plugin registers `databaseHooks` inside better-auth for the `create.after`, `update.after`, and `delete.after` lifecycle events on audited tables. Each event fires `writeAuditEntry` as fire-and-forget: errors are logged via `console.error` and never rethrow into the auth flow. Without it, and with `auditTables` set, the audit is [atomic](#atomic-audit).
 
 ```typescript
 import { betterAuth } from "better-auth";
@@ -61,8 +61,8 @@ export function buildAuth(env: Env) {
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `auditTables` | `("user" \| "account" \| "session" \| "verification")[]` | `["user"]` | Tables to hook for create, update, and delete events. Session is excluded by default due to volume: once listed, every sign-in, refresh, sign-out, and revocation writes an entry. Verification is opt-in: its `value` column holds OTP codes and reset tokens, which redaction strips by table rule. |
-| `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | `undefined` | Called for each auditable event. If omitted, audit logging is disabled. |
+| `auditTables` | `readonly string[]` | `["user"]` | Any model in the better-auth schema, core or plugin: `user`, `account`, `session`, `verification`, `passkey`, `apikey`, `organization`, `member`, `invitation`, and so on. A name that is not a model throws at init. Session is excluded by default due to volume: once listed, every sign-in, refresh, sign-out, and revocation writes an entry. Verification is opt-in: its `value` column holds OTP codes and reset tokens, which redaction strips by table rule. Set it without `writeAuditEntry` for [atomic audit](#atomic-audit). |
+| `writeAuditEntry` | `(entry: LedgerAuditEntry) => Promise<void>` | `undefined` | The callback path: called for each auditable event after the change, fire-and-forget. With `auditTables` set and no callback, audit is atomic instead. With neither, the default `["user"]` is hooked and nothing is written. |
 | `softDeleteUser` | `boolean` | `false` | Soft-delete the user row instead of deleting it. See [Soft delete](#soft-delete-softdeleteuser). |
 | `redactPatterns` | `readonly string[]` | `undefined` | Extra key patterns to redact. Redaction itself is always on. |
 
@@ -89,12 +89,55 @@ Every entry's `oldData`/`newData` pass through `redactTableRow` before your `wri
 | `private_key` | `private_key` |
 | `authorization` | `Authorization` |
 | `cookie` | `cookie`, `setCookie` |
+| `key` | `key` (the apikey plugin's column), `keyId`, `publicKey` |
 
 Substring matching over-redacts on purpose: `code` also strips `postalCode` and `countryCode`. Losing a harmless field from an audit payload is the safe direction. Add app-specific patterns via `redactPatterns`.
 
 **By table.** Some columns hold secrets under a name that says nothing. `TABLE_SECRET_COLUMNS` redacts them by table, top-level key, exact name: `verification.value`, which holds OTP codes and reset tokens. Auditing `verification` is opt-in, and safe when you opt in.
 
 **Not by value.** Redaction inspects key names only, never string contents. A JWT or hex token stored under an innocent key (`note`, `metadata.blob`) passes through. If your schema carries one, list that key in `redactPatterns`.
+
+### Atomic audit
+
+Set `auditTables` and leave out `writeAuditEntry`, and the change and its audit row are written in one database transaction: both exist or neither does. If the audit row cannot be written, the change does not happen and the caller gets the error.
+
+```typescript
+import { betterAuth } from "better-auth";
+import { organization } from "better-auth/plugins";
+import { ledgerPlugin } from "@rafters/ledger/better-auth";
+
+export const auth = betterAuth({
+  database: db, // a better-auth adapter with real transactions
+  plugins: [
+    organization(),
+    ledgerPlugin({ auditTables: ["user", "account", "organization", "member"] }),
+  ],
+});
+```
+
+**How.** At init the plugin replaces better-auth's `context.adapter` with a wrapper, before `internalAdapter` is built from it. Every write to an audited model (`create`, `update`, `updateMany`, `delete`, `deleteMany`, `consumeOne`, `incrementOne`) runs inside one adapter transaction together with the audit insert. The wrapper sits under everything that writes, so plugin endpoints that call `ctx.context.adapter` directly are covered the same as `internalAdapter`. Inside a transaction better-auth already opened (sign-up with an OAuth account, for one), the audit row joins that transaction. The wrapper reads the row before an update or delete, so `oldData` is a true before-image, not the `{ changed }` of the callback path.
+
+**The table.** The plugin declares a `ledgerAudit` model through its schema, so better-auth's migration tooling creates `ledger_audit_log` for you. With the Drizzle adapter, declare it in your schema under the key `ledgerAudit`. Every audited write adds one row:
+
+| Column | Holds |
+| --- | --- |
+| `id` | UUIDv7 |
+| `tableName`, `recordId` | The model and id of the row that changed |
+| `action` | `INSERT`, `UPDATE`, `SOFT_DELETE`, or `DELETE` |
+| `oldData`, `newData` | The row before and after as JSON text, redacted. `null` for the side that does not exist: `INSERT` has no `oldData`, `DELETE` and `SOFT_DELETE` no `newData` (a soft delete's `newData` is the row with `deletedAt` set) |
+| `userId` | The actor, resolved as in [Attribution](#attribution); `null` when unknown |
+| `subjectUserId` | The user the change concerns: the row's own id for `user`; the row's `userId` field for any other model that has one (`account`, `session`, `member`, `passkey`); `null` for a row with no `userId`, such as `organization` |
+| `createdAt` | Write time |
+
+`userId` and `subjectUserId` differ when one user changes another's data: an admin revoking a session has the admin as `userId` and the session's owner as `subjectUserId`. An event relay reads the change from `newData` (`oldData` for a delete) and the person it concerns from `subjectUserId`. A model whose owner is not in a `userId` field, such as an apikey owned through `referenceId`, has `subjectUserId` `null`; its data is still in the payloads.
+
+**Actor.** For writes that pass through better-auth's `databaseHooks` (everything `internalAdapter` does), the actor is the hook context's session user, as in [Attribution](#attribution). A plugin endpoint that writes through `ctx.context.adapter` runs no hook, so its actor is the ledger context's `userId`: run requests inside `runWithLedgerContext`, or the entry's `userId` is `null`.
+
+**What it needs.** An adapter whose `transaction()` is real: better-auth's built-in SQLite, Postgres, and MySQL through Kysely, and `drizzleAdapter` with `transaction: true` over a driver with transactions. `ledgerPlugin` throws at init on one without. **Cloudflare D1 is such an adapter**: D1 has no interactive transactions, only `D1Database.batch()`, and better-auth's adapters expose no batch, so the atomic path does not run on D1 today.
+
+**Not covered.** The audit table is not append-only (add the triggers from `sql/sqlite/audit.sql` for `ledger_audit_log` if you need that), `purgeUserData` does not read it, and failed sign-ins are not audit data. Do not list `ledgerAudit` in `auditTables`; init throws.
+
+**Choosing a path.** `writeAuditEntry` keeps the callback path: the entry is written after the change, errors are logged and never thrown, and `auditTables` still names the tables. Use it where the adapter has no transactions.
 
 ### `LedgerAuditEntry` shape
 

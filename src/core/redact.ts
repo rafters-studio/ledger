@@ -18,6 +18,11 @@
  * harmless field from an audit payload is the safe direction; storing
  * an OTP code in clear is not.
  *
+ * "key" is there for plugin tables: better-auth's apikey plugin stores
+ * the hashed key in a column named "key", and none of the patterns above
+ * is a substring of "key". It also strips keyId, publicKey, and the like;
+ * over-redacting an audit payload is the safe direction.
+ *
  * Only key NAMES are inspected. A secret-shaped string (a JWT, a hex
  * token) under an innocent key passes through; list that key in
  * extraPatterns.
@@ -38,6 +43,7 @@ export const DEFAULT_SECRET_PATTERNS: readonly string[] = [
   "private_key",
   "authorization",
   "cookie",
+  "key",
 ];
 
 /**

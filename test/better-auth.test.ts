@@ -6,6 +6,16 @@ import {
   ledgerPlugin,
 } from "../src/better-auth.js";
 
+/** The slice of better-auth's init context a hook-only test needs: the schema's model names. */
+function stubContext(): Parameters<NonNullable<ReturnType<typeof ledgerPlugin>["init"]>>[0] {
+  const tables = Object.fromEntries(
+    ["user", "account", "session", "verification"].map((model) => [model, { fields: {} }]),
+  );
+  return { tables } as unknown as Parameters<
+    NonNullable<ReturnType<typeof ledgerPlugin>["init"]>
+  >[0];
+}
+
 describe("ledgerPlugin", () => {
   test("returns a valid BetterAuthPlugin", () => {
     const plugin = ledgerPlugin();
@@ -24,7 +34,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
 
     expect(result?.options?.databaseHooks).toBeDefined();
     expect(result?.options?.databaseHooks?.user).toBeDefined();
@@ -42,7 +52,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Simulate user creation
@@ -68,7 +78,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Simulate user update with no ledger context and no before hook
@@ -94,7 +104,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), async () => {
@@ -116,7 +126,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
     const hookCtx = { context: { session: { user: { id: "session-admin" } } } };
 
@@ -142,7 +152,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
     const requestA = { context: { session: { user: { id: "actor-a" } } } };
     const requestB = { context: { session: { user: { id: "actor-b" } } } };
@@ -171,7 +181,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), async () => {
@@ -186,7 +196,7 @@ describe("ledgerPlugin", () => {
 
   test("update.before returns nothing -- never echoes data back into the hook merge", async () => {
     const plugin = ledgerPlugin({ writeAuditEntry: () => Promise.resolve() });
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // better-auth merges a hook's returned data over the accumulated
@@ -208,7 +218,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     const ctxA = createLedgerContext({ userId: "actor-a" });
@@ -249,7 +259,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Request 1: before fires but the update fails/is vetoed -- after
@@ -278,7 +288,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await userHooks?.update?.before?.({ name: "uncaptured" });
@@ -297,7 +307,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await runWithLedgerContext(createLedgerContext({ userId: "admin-1" }), async () => {
@@ -319,7 +329,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const accountHooks = result?.options?.databaseHooks?.account;
 
     // Simulate account creation
@@ -337,9 +347,10 @@ describe("ledgerPlugin", () => {
   test("respects custom auditTables config", () => {
     const plugin = ledgerPlugin({
       auditTables: ["user", "session"],
+      writeAuditEntry: () => Promise.resolve(),
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
 
     expect(result?.options?.databaseHooks?.user).toBeDefined();
     expect(result?.options?.databaseHooks?.session).toBeDefined();
@@ -349,7 +360,7 @@ describe("ledgerPlugin", () => {
   test("registers only delete.after and no deleteUser option without softDeleteUser", () => {
     const plugin = ledgerPlugin();
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
 
     expect(result?.options?.databaseHooks?.user?.delete?.before).toBeUndefined();
     expect(result?.options?.databaseHooks?.user?.delete?.after).toBeDefined();
@@ -357,7 +368,7 @@ describe("ledgerPlugin", () => {
   });
 
   describe("delete.after", () => {
-    function hooksFor(auditTables: ("user" | "account" | "session" | "verification")[]) {
+    function hooksFor(auditTables: string[]) {
       const entries: LedgerAuditEntry[] = [];
       const plugin = ledgerPlugin({
         auditTables,
@@ -366,7 +377,7 @@ describe("ledgerPlugin", () => {
           return Promise.resolve();
         },
       });
-      const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+      const result = plugin.init?.(stubContext());
       return { hooks: result?.options?.databaseHooks, entries };
     }
 
@@ -440,7 +451,7 @@ describe("ledgerPlugin", () => {
     const writeSpy = vi.fn().mockResolvedValue(undefined);
     const plugin = ledgerPlugin({ writeAuditEntry: writeSpy });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Object.entries invokes getters; a throwing getter makes redaction fail
@@ -472,7 +483,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Should not throw
@@ -495,7 +506,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const accountHooks = result?.options?.databaseHooks?.account;
 
     await accountHooks?.create?.after?.({
@@ -530,7 +541,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const verificationHooks = result?.options?.databaseHooks?.verification;
 
     await verificationHooks?.create?.after?.({
@@ -557,7 +568,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await userHooks?.create?.after?.({
@@ -580,7 +591,7 @@ describe("ledgerPlugin", () => {
       },
     });
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     await userHooks?.create?.after?.({ id: "user-1", ssn: "123-45-6789" });
@@ -591,7 +602,7 @@ describe("ledgerPlugin", () => {
   test("works without writeAuditEntry (no-op)", async () => {
     const plugin = ledgerPlugin();
 
-    const result = plugin.init?.({} as unknown as Parameters<NonNullable<typeof plugin.init>>[0]);
+    const result = plugin.init?.(stubContext());
     const userHooks = result?.options?.databaseHooks?.user;
 
     // Should not throw
@@ -740,7 +751,12 @@ describe("ledgerPlugin softDeleteUser", () => {
 
   function fakeContext(fields: string[], update = vi.fn().mockResolvedValue(null)) {
     const ctx = {
-      tables: { user: { fields: Object.fromEntries(fields.map((f) => [f, { type: "string" }])) } },
+      tables: {
+        user: { fields: Object.fromEntries(fields.map((f) => [f, { type: "string" }])) },
+        account: { fields: {} },
+        session: { fields: {} },
+        verification: { fields: {} },
+      },
       adapter: { update },
     };
     return { ctx: ctx as unknown as Parameters<PluginInit>[0], update };
