@@ -1,0 +1,20 @@
+catalogMode: strict
+# The toolchain's own bin is what CI runs for the drift check, so the root devDepends on it.
+catalog:
+  "@rafters/toolchain": 0.1.1
+  # tsup's dts build calls the TypeScript JS API, which TypeScript 7 removes
+  # ("Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')").
+  # Kept at the version the repo built on; moving to 7 is its own issue.
+  typescript: 6.0.0-beta
+
+configDependencies:
+  "@rafters/toolchain": 0.1.1
+
+minimumReleaseAgeExclude:
+  - "@rafters/toolchain@0.1.1"
+
+allowBuilds:
+  "@prisma/engines": false
+  esbuild: true
+  lefthook: true
+  prisma: false
