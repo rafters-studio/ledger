@@ -160,7 +160,7 @@
   "bugs": {
     "url": "https://github.com/rafters-studio/ledger/issues"
   },
-  "packageManager": "pnpm@10.28.0",
+  "packageManager": "pnpm@12.9.1",
   "engines": {
     "node": ">=22.5"
   },
@@ -185,6 +185,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
+    "@rafters/toolchain": "catalog:",
     "better-auth": "^1.7.7",
     "drizzle-orm": "^0.45.1",
     "kysely": "^0.29.4",
@@ -192,7 +193,7 @@
     "oxfmt": "^0.45.0",
     "oxlint": "^1.60.0",
     "tsup": "^8.5.1",
-    "typescript": "6.0.0-beta",
+    "typescript": "catalog:",
     "vitest": "^4.0.18"
   }
 }
